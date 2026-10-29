@@ -77,7 +77,7 @@ Things deliberately left out: spacing, fonts, colours, page layout. New text tak
 ## GUI
 
 `gui/` is a desktop editor on the same core (Tauri + ProseMirror). It shows the document formatted:
-- tracked changes in color; click one in the text to see who made it and accept or reject it (a replacement is decided as a whole, as in the sidebar)
+- tracked changes in color; click one in the text to see who made it, accept or reject it, or comment on it (a replacement is decided as a whole, as in the sidebar)
 - comments, which you can add, reply to, resolve or delete
 - tables (add and remove rows), images, footnotes, text boxes and captions
 
@@ -85,7 +85,7 @@ It's built for reviewing, not just editing:
 - **Outline:** the heading tree with per-section counts of changes and comments, plus an activity bar colored by author. It follows where you are and collapses; click to jump.
 - **Review feed:** changes and comment threads grouped by section, each with a few words of context. A deletion followed by an insertion reads as one `old → new` replacement. Comments expand inline to reply or resolve; clicking commented text opens its thread without taking the cursor out of the document. Deleting a thread asks for a second click.
 - **People:** a one-line summary ("143 changes by 7 · 15 threads (15 open) by 4") and a chip per person. Hover a chip for their breakdown; click to filter to them (shift+click adds people). Their edits stay highlighted in the text and everyone else's fade.
-- **Bulk actions follow the filter:** accept or reject everything shown, by one person or in one section, at once.
+- **Bulk actions follow the filter:** accept or reject everything shown, by one person or in one section, at once. Every accept, reject, resolve or thread deletion can be taken back: with the toast's Undo, or with Ctrl+Z once the editor has no typing left to undo.
 
   ![Filtered to one reviewer: her six changes and one comment are listed, her edits stay highlighted in the text while everyone else's fade](docs/screenshots/person.png)
 
