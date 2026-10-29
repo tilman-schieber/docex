@@ -22,7 +22,14 @@ struct Session {
     path: Option<PathBuf>,
     dirty: bool,
     backed_up: bool,
+    /// The document before each review decision (accept, reject, resolve,
+    /// delete thread), newest last. Any other edit clears it, so undoing never
+    /// drops text typed since.
+    undo: Vec<Vec<u8>>,
 }
+
+/// Review decisions kept for undo.
+const UNDO_DEPTH: usize = 20;
 
 #[derive(Default)]
 struct AppState {
@@ -43,6 +50,8 @@ struct View {
     path: Option<String>,
     dirty: bool,
     warnings: Vec<String>,
+    /// Whether the last review decision can be undone.
+    can_undo: bool,
 }
 
 fn mime(name: &str) -> &'static str {
@@ -82,6 +91,7 @@ fn view(s: &Session, warnings: Vec<String>) -> Result<View, String> {
         path: s.path.as_ref().map(|p| p.display().to_string()),
         dirty: s.dirty,
         warnings,
+        can_undo: !s.undo.is_empty(),
     })
 }
 
@@ -125,17 +135,49 @@ fn with_session<T>(
         warnings.extend(r.warnings.iter().cloned());
         if r.changed() {
             s.dirty = true;
+            s.undo.clear();
         }
     }
     f(s, &mut warnings)?;
     view(s, warnings)
 }
 
+/// Like `with_session`, for a review decision: remember the document first so
+/// it can be undone.
+fn with_undo(
+    state: &tauri::State<AppState>,
+    model: &DocModel,
+    tracked: bool,
+    f: impl FnOnce(&mut Session) -> Result<(), String>,
+) -> Result<View, String> {
+    with_session(state, Some(model), tracked, |s, _| {
+        let snap = s.doc.to_bytes().map_err(err)?;
+        f(s)?;
+        s.undo.push(snap);
+        if s.undo.len() > UNDO_DEPTH {
+            s.undo.remove(0);
+        }
+        Ok(())
+    })
+}
+
+/// Take back the last review decision.
+#[tauri::command]
+fn undo_review(state: tauri::State<AppState>, model: DocModel, tracked: bool) -> Result<View, String> {
+    with_session(&state, Some(&model), tracked, |s, _| {
+        let snap = s.undo.pop().ok_or("nothing to undo (the document was edited since)")?;
+        s.doc = Docx::from_bytes(snap).map_err(err)?;
+        // Unsaved even if it matches an earlier state: a save may have written the decision.
+        s.dirty = true;
+        Ok(())
+    })
+}
+
 #[tauri::command]
 fn open_doc(state: tauri::State<AppState>, path: String) -> Result<View, String> {
     let p = PathBuf::from(&path);
     let doc = Docx::open(&p).map_err(err)?;
-    let s = Session { doc, path: Some(p), dirty: false, backed_up: false };
+    let s = Session { doc, path: Some(p), dirty: false, backed_up: false, undo: Vec::new() };
     let v = view(&s, Vec::new())?;
     *state.session.lock().unwrap() = Some(s);
     Ok(v)
@@ -145,7 +187,7 @@ fn open_doc(state: tauri::State<AppState>, path: String) -> Result<View, String>
 fn new_doc(state: tauri::State<AppState>) -> Result<View, String> {
     let bytes = docex_core::template::blank(&now_iso()).map_err(err)?;
     let doc = Docx::from_bytes(bytes).map_err(err)?;
-    let s = Session { doc, path: None, dirty: false, backed_up: true };
+    let s = Session { doc, path: None, dirty: false, backed_up: true, undo: Vec::new() };
     let v = view(&s, Vec::new())?;
     *state.session.lock().unwrap() = Some(s);
     Ok(v)
@@ -164,7 +206,7 @@ fn sync(state: tauri::State<AppState>, model: DocModel, tracked: bool) -> Result
 
 #[tauri::command]
 fn resolve(state: tauri::State<AppState>, model: DocModel, tracked: bool, wids: Vec<String>, accept: bool) -> Result<View, String> {
-    with_session(&state, Some(&model), tracked, |s, _| {
+    with_undo(&state, &model, tracked, |s| {
         if s.doc.resolve_wids(&wids, accept).map_err(err)? > 0 {
             s.dirty = true;
         }
@@ -182,7 +224,7 @@ fn resolve_batch(
     reject: Vec<String>,
     done_comments: Vec<String>,
 ) -> Result<View, String> {
-    with_session(&state, Some(&model), tracked, |s, _| {
+    with_undo(&state, &model, tracked, |s| {
         let mut n = 0;
         for id in &done_comments {
             s.doc.set_comment_done(id, true).map_err(err)?;
@@ -203,7 +245,7 @@ fn resolve_batch(
 
 #[tauri::command]
 fn resolve_all(state: tauri::State<AppState>, model: DocModel, tracked: bool, accept: bool) -> Result<View, String> {
-    with_session(&state, Some(&model), tracked, |s, _| {
+    with_undo(&state, &model, tracked, |s| {
         if s.doc.resolve_changes(&[], None, accept).map_err(err)? > 0 {
             s.dirty = true;
         }
@@ -217,13 +259,14 @@ fn comment_reply(state: tauri::State<AppState>, model: DocModel, tracked: bool, 
     with_session(&state, Some(&model), tracked, |s, _| {
         s.doc.reply_comment(&id, &text, &author, &now_iso()).map_err(err)?;
         s.dirty = true;
+        s.undo.clear();
         Ok(())
     })
 }
 
 #[tauri::command]
 fn comment_done(state: tauri::State<AppState>, model: DocModel, tracked: bool, id: String, done: bool) -> Result<View, String> {
-    with_session(&state, Some(&model), tracked, |s, _| {
+    with_undo(&state, &model, tracked, |s| {
         s.doc.set_comment_done(&id, done).map_err(err)?;
         s.dirty = true;
         Ok(())
@@ -232,7 +275,7 @@ fn comment_done(state: tauri::State<AppState>, model: DocModel, tracked: bool, i
 
 #[tauri::command]
 fn comment_delete(state: tauri::State<AppState>, model: DocModel, tracked: bool, id: String) -> Result<View, String> {
-    with_session(&state, Some(&model), tracked, |s, _| {
+    with_undo(&state, &model, tracked, |s| {
         s.doc.delete_comment(&id).map_err(err)?;
         s.dirty = true;
         Ok(())
@@ -244,6 +287,7 @@ fn set_track(state: tauri::State<AppState>, model: DocModel, tracked: bool, on: 
     with_session(&state, Some(&model), tracked, |s, _| {
         s.doc.set_track_changes(on).map_err(err)?;
         s.dirty = true;
+        s.undo.clear();
         Ok(())
     })
 }
@@ -409,6 +453,7 @@ fn main() {
             resolve,
             resolve_all,
             resolve_batch,
+            undo_review,
             ai_settings,
             ai_settings_set,
             ai_complete,

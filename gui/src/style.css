@@ -1551,6 +1551,18 @@ main {
   max-width: 70vw;
 }
 
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.toast-act {
+  color: var(--accent);
+  font-weight: 600;
+  padding: 0 4px;
+}
+
 .toast.error {
   border-left-color: var(--red);
   color: var(--red);

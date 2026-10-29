@@ -72,11 +72,37 @@ let sectionTitle = "";
 // ---------------------------------------------------------------------------
 // Small UI helpers
 
-function toast(msg: string, kind: "info" | "error" = "info") {
+/** Toasts with a button; only the newest one stays, since it acts on the latest state. */
+const dropActionToasts = () => document.querySelectorAll("#toasts .toast.has-act").forEach((t) => t.remove());
+
+function toast(msg: string, kind: "info" | "error" = "info", action?: { label: string; run: () => unknown }) {
   const t = h("div", { class: `toast ${kind}` }, msg);
+  if (action) {
+    dropActionToasts();
+    t.classList.add("has-act");
+    const b = h("button", { class: "toast-act", textContent: action.label, onclick: () => { t.remove(); void action.run(); } });
+    t.append(b);
+  }
   $("#toasts").append(t);
-  setTimeout(() => t.remove(), kind === "error" ? 8000 : 4000);
+  setTimeout(() => t.remove(), kind === "error" || action ? 8000 : 4000);
 }
+
+/** Take back the last accept / reject / resolve / delete. */
+async function undoReview() {
+  if (!current?.can_undo) return false;
+  dropActionToasts();
+  const v = await call("undo_review");
+  if (v) toast("Undone");
+  return true;
+}
+
+/** Ctrl+Z: the editor's own history first, then the last review decision. */
+const undoAny: Command = (state, dispatch) => {
+  if (undo(state, dispatch)) return true;
+  if (!current?.can_undo || !dispatch) return !!current?.can_undo;
+  void undoReview();
+  return true;
+};
 
 /** A modal text prompt. Resolves to null when cancelled. */
 function askText(title: string, initial = "", multiline = false): Promise<string | null> {
@@ -246,7 +272,7 @@ function plugins() {
     history(),
     markdownRules(),
     keymap({
-      "Mod-z": undo,
+      "Mod-z": undoAny,
       "Mod-y": redo,
       "Shift-Mod-z": redo,
       "Mod-b": toggleMark(schema.marks.strong),
@@ -376,7 +402,7 @@ const cockpit = createCockpit({
   triage: (items, scope) =>
     openTriage(items, scope, {
       show: (it, inset) => cockpit.focus(it, true, { hold: true, inset }),
-      apply: (accept, reject, done) => call("resolve_batch", { accept, reject, done_comments: done }),
+      apply: (accept, reject, done, label) => call("resolve_batch", { accept, reject, done_comments: done, label }),
       reply: (it, text) => (it.comment ? call("comment_reply", { id: it.comment.id, text }) : commentOn(it, text)),
       ask: (title) => askText(title, "", true),
       section: (it) => cockpit.index().sections[it.section]?.title ?? "",
@@ -412,6 +438,7 @@ function load(v: View, keepSelection = true) {
   }
   view.updateState(state);
   localDirty = false;
+  if (!v.can_undo) dropActionToasts();
   for (const w of v.warnings) toast(w);
   // Compare with the previous visit (fetched once per opened file).
   if (v.path && v.path !== sincePath) {
@@ -453,10 +480,13 @@ async function call(cmd: string, args: Record<string, unknown> = {}, withModel =
   busy = true;
   document.body.classList.add("busy");
   try {
-    const payload = withModel ? { model: model(args.pending as PendingComment | undefined), tracked: tracking, ...args } : args;
+    const payload = withModel ? { model: model(args.pending as PendingComment | undefined), tracked: tracking, ...args } : { ...args };
+    const label = args.label as string | undefined;
     delete (payload as Record<string, unknown>).pending;
+    delete (payload as Record<string, unknown>).label;
     const v = await invoke<View>(cmd, payload);
     load(v);
+    if (label && v.can_undo) toast(label, "info", { label: "Undo", run: undoReview });
     return v;
   } catch (e) {
     toast(String(e), "error");
@@ -558,7 +588,7 @@ async function addComment() {
   await call("sync", { pending: { ...sel, text: text.trim() } });
 }
 
-const accept = (wids: string[], yes: boolean) => call("resolve", { wids, accept: yes });
+const accept = (wids: string[], yes: boolean) => call("resolve", { wids, accept: yes, label: yes ? "Accepted the change" : "Rejected the change" });
 
 // ---------------------------------------------------------------------------
 // Popover for tracked changes in the text
@@ -582,10 +612,21 @@ function showChangePopover(el: HTMLElement) {
     b.dataset.tip = `${label}  Alt+${label[0]}`;
     return b;
   };
+  const note = h("button", {
+    textContent: "Comment…",
+    onclick: async () => {
+      hidePopover();
+      const text = await askText("Comment on this change", "", true);
+      if (!text?.trim()) return;
+      if (it) await commentOn(it, text.trim());
+      else toast("Save first to comment on this change.");
+    },
+  });
+  note.dataset.tip = "Add a comment on this change";
   pop.replaceChildren(
     h("div", { class: "pop-title" }, it ? `${it.author} · ${it.label ?? ({ insert: "inserted", delete: "deleted", replace: "replaced" } as Record<string, string>)[it.kind] ?? "changed"} · ${shortDate(it.date)}` : el.title),
     it && it.kind === "replace" ? cockpit.changeLine({ ...it, before: "", after: "" }) : "",
-    h("div", { class: "row" }, btn("Accept", "ok", true), btn("Reject", "no", false)),
+    h("div", { class: "row" }, btn("Accept", "ok", true), btn("Reject", "no", false), note),
   );
   const r = el.getBoundingClientRect();
   pop.style.left = "0px";
@@ -678,7 +719,7 @@ $("#toolbar").append(
   saveBtn,
   tb(SaveAll, "Save as  Ctrl+Shift+S", () => saveFile(true)),
   sep(),
-  tb(Undo2, "Undo  Ctrl+Z", () => undo(view.state, view.dispatch)),
+  tb(Undo2, "Undo  Ctrl+Z  (also takes back the last accept, reject or resolve)", () => undoAny(view.state, view.dispatch)),
   tb(Redo2, "Redo  Ctrl+Y", () => redo(view.state, view.dispatch)),
   sep(),
   styles,

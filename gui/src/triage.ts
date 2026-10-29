@@ -12,7 +12,7 @@ export interface TriageHost {
   /** Scroll the document to the item and highlight it; `inset` px at the top are covered by the triage panel. */
   show(it: Item, inset: number): void;
   /** Apply all decisions at once. */
-  apply(accept: string[], reject: string[], resolveComments: string[]): Promise<unknown>;
+  apply(accept: string[], reject: string[], resolveComments: string[], label: string): Promise<unknown>;
   reply(it: Item, text: string): Promise<unknown>;
   ask(title: string): Promise<string | null>;
   /** Section path of the item, for the card header. */
@@ -57,8 +57,9 @@ export function openTriage(items: Item[], scope: string, host: TriageHost) {
       if (d === "reject") rej.push(...it.wids);
       if (d === "resolve" && it.comment) res.push(it.comment.id);
     }
+    const label = `Triage: ${[count("accept") && `${count("accept")} accepted`, count("reject") && `${count("reject")} rejected`, count("resolve") && `${count("resolve")} resolved`].filter(Boolean).join(", ")}`;
     close();
-    if (acc.length || rej.length || res.length) await host.apply(acc, rej, res);
+    if (acc.length || rej.length || res.length) await host.apply(acc, rej, res, label);
   }
 
   function decide(d: Decision) {

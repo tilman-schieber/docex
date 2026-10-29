@@ -80,4 +80,6 @@ export interface View {
   path: string | null;
   dirty: boolean;
   warnings: string[];
+  /** Whether the last review decision can be undone (`undo_review`). */
+  can_undo: boolean;
 }

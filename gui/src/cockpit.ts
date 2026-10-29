@@ -27,6 +27,7 @@ export interface App {
   view: EditorView;
   current(): View | null;
   me(): string;
+  /** `args.label` names a review decision for the "Undo" toast. */
   call(cmd: string, args?: Record<string, unknown>): Promise<View | undefined>;
   toast(msg: string, kind?: "info" | "error"): void;
   /** Whether Track Changes is on. */
@@ -204,6 +205,14 @@ export function createCockpit(app: App) {
     view.dispatch(tr);
   }
 
+  /** Toast text for a decision: the edit itself when there is one, else a count. */
+  function decided(items: Item[], accept: boolean) {
+    const chg = items.filter((i) => i.kind !== "comment");
+    const one = chg.length === 1 ? chg[0] : null;
+    const what = one && (one.old || one.new) ? [one.old && visible(one.old), one.new && visible(one.new)].filter(Boolean).join(" → ") : plural(chg.length, "change");
+    return `${accept ? "Accepted" : "Rejected"} ${what.length > 60 ? what.slice(0, 57) + "…" : what}`;
+  }
+
   const sig = (i: Item) => `${i.kind}\u0001${i.old ?? ""}\u0001${i.new ?? ""}`;
 
   async function resolve(items: Item[], accept: boolean) {
@@ -229,12 +238,12 @@ export function createCockpit(app: App) {
         }
       }
       const wids = [...synced, ...mapped].flatMap((i) => i.wids);
-      if (wids.length) await app.call("resolve", { wids, accept });
+      if (wids.length) await app.call("resolve", { wids, accept, label: decided(fresh, accept) });
       return;
     }
     resolveLocal(fresh, accept);
     const wids = fresh.filter((i) => !i.pending).flatMap((i) => i.wids);
-    if (wids.length) await app.call("resolve", { wids, accept });
+    if (wids.length) await app.call("resolve", { wids, accept, label: decided(fresh, accept) });
     else refreshNow();
   }
 
@@ -402,7 +411,7 @@ export function createCockpit(app: App) {
     if (it.kind === "comment") {
       const c = it.comment!;
       acts.append(
-        act(c.done ? Undo2 : Check, c.done ? "Reopen" : "Resolve", () => app.call("comment_done", { id: c.id, done: !c.done }), "ok"),
+        act(c.done ? Undo2 : Check, c.done ? "Reopen" : "Resolve", () => app.call("comment_done", { id: c.id, done: !c.done, label: c.done ? "Reopened the thread" : "Resolved the thread" }), "ok"),
         confirmDelete === c.id
           ? h(
               "button",
@@ -412,7 +421,7 @@ export function createCockpit(app: App) {
                 onclick: (e: Event) => {
                   e.stopPropagation();
                   confirmDelete = null;
-                  void app.call("comment_delete", { id: c.id });
+                  void app.call("comment_delete", { id: c.id, label: "Deleted the thread" });
                 },
               },
               icon(Trash2),
