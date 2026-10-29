@@ -1,7 +1,7 @@
 //! Projection -> Markdown with CriticMarkup.
 
 use crate::comments::Comments;
-use crate::model::{image_alt, Block, Marks, Para, Status, Table, What};
+use crate::model::{image_alt, Block, Marks, Note, Para, Status, Table, TextBox, What};
 use crate::styles::Kind;
 use std::collections::HashSet;
 
@@ -20,7 +20,19 @@ pub struct RenderCtx<'a> {
     pub comments: &'a Comments,
     /// Comment ids that have a `commentRangeEnd` somewhere in the document.
     pub ranged: HashSet<String>,
-    pub notes: &'a [(String, String)],
+    pub notes: &'a [Note],
+    pub boxes: &'a [TextBox],
+}
+
+/// Rendered Markdown, with what each Markdown block came from.
+pub struct Rendered {
+    pub md: String,
+    /// For every top-level Markdown block, the index of its projection block.
+    pub map: Vec<usize>,
+    /// For every rendered footnote: label and indices of its rendered paragraphs.
+    pub notes: Vec<(String, Vec<usize>)>,
+    /// For every text box: index into the boxes and its rendered paragraphs.
+    pub boxes: Vec<(usize, Vec<usize>)>,
 }
 
 pub const HEADER: &str = "<!-- docex: edit freely. {++insert++} {--delete--} {~~old~>new~~} {>>comment<<} -->";
@@ -37,11 +49,14 @@ enum Tok {
     Marker(String),
 }
 
-/// Render blocks. Returns the Markdown and, for every Markdown block emitted,
-/// the index of the projection block it came from.
-pub fn render(blocks: &[Block], cx: &RenderCtx) -> (String, Vec<usize>) {
+pub const BOX_START: &str = "docex:textbox";
+pub const BOX_END: &str = "/docex:textbox";
+
+/// Render blocks, footnotes and text boxes.
+pub fn render(blocks: &[Block], cx: &RenderCtx) -> Rendered {
     let mut out = String::new();
     let mut map = Vec::new();
+    let mut box_map = Vec::new();
     if cx.view == View::Review {
         out.push_str(HEADER);
     }
@@ -55,7 +70,16 @@ pub fn render(blocks: &[Block], cx: &RenderCtx) -> (String, Vec<usize>) {
             *in_code = false;
         }
     };
+    let mut pending_anchor: Option<usize> = None;
     for (bi, b) in blocks.iter().enumerate() {
+        if let Some(a) = pending_anchor.take() {
+            if text_boxes_after(a, cx, &mut out, &mut box_map, &mut in_code) {
+                list_stack.clear();
+                prev_list = false;
+                prev_top = None;
+            }
+        }
+        pending_anchor = Some(b.body_idx());
         match b {
             Block::Para(p) => {
                 let mode = Mode { heading: matches!(p.kind, Kind::Heading(_)), code: p.kind == Kind::Code, table: false };
@@ -101,6 +125,7 @@ pub fn render(blocks: &[Block], cx: &RenderCtx) -> (String, Vec<usize>) {
                         out.push(' ');
                     }
                     Kind::Quote => out.push_str("> "),
+                    Kind::Caption => out.push_str(": "),
                     Kind::Bullet(l) | Kind::Number(l) => {
                         let l = (l as usize).min(list_stack.len());
                         list_stack.truncate(l);
@@ -141,14 +166,54 @@ pub fn render(blocks: &[Block], cx: &RenderCtx) -> (String, Vec<usize>) {
             }
         }
     }
+    if let Some(a) = pending_anchor.take() {
+        text_boxes_after(a, cx, &mut out, &mut box_map, &mut in_code);
+    }
     close_code(&mut out, &mut in_code);
-    let notes: Vec<&(String, String)> = cx.notes.iter().filter(|(id, _)| out.contains(&format!("[^{id}]"))).collect();
-    for (id, text) in notes {
+    let mut note_map = Vec::new();
+    let referenced: Vec<&Note> = cx.notes.iter().filter(|n| out.contains(&format!("[^{}]", n.label))).collect();
+    for n in referenced {
         sep(&mut out, false);
-        out.push_str(&format!("[^{id}]: {}", escape_plain(&text.replace('\n', " "))));
+        out.push_str(&format!("[^{}]: ", n.label));
+        let mut used = Vec::new();
+        for (k, p) in n.paras.iter().enumerate() {
+            let Some(text) = inline(p, Mode::default(), cx) else { continue };
+            if !used.is_empty() {
+                out.push_str("\n\n    ");
+            }
+            out.push_str(&text);
+            used.push(k);
+        }
+        note_map.push((n.label.clone(), used));
     }
     out.push('\n');
-    (out, map)
+    Rendered { md: out, map, notes: note_map, boxes: box_map }
+}
+
+/// Emit the text boxes anchored in body block `anchor`. Returns whether any were written.
+fn text_boxes_after(anchor: usize, cx: &RenderCtx, out: &mut String, box_map: &mut Vec<(usize, Vec<usize>)>, in_code: &mut bool) -> bool {
+    let mut any = false;
+    for (k, b) in cx.boxes.iter().enumerate().filter(|(_, b)| b.anchor == anchor) {
+        if *in_code {
+            out.push_str("\n````");
+            *in_code = false;
+        }
+        sep(out, false);
+        out.push_str(&format!("<!-- {BOX_START} {} -->", b.id));
+        let mut used = Vec::new();
+        for (pi, p) in b.paras.iter().enumerate() {
+            if let Some(text) = inline(p, Mode::default(), cx) {
+                sep(out, false);
+                out.push_str(&text);
+                used.push(pi);
+            }
+        }
+        sep(out, false);
+        out.push_str(&format!("<!-- {BOX_END} -->"));
+        box_map.push((k, used));
+        any = true;
+    }
+    any
 }
 
 fn sep(out: &mut String, tight: bool) {
@@ -537,7 +602,7 @@ fn escape_char(c: char, prev: Option<char>, next: Option<char>, line_start: bool
         '}' => prev.is_some_and(|p| "+-~=<".contains(p)),
         '|' => mode.table,
         '#' => line_start || mode.heading,
-        '>' | '-' | '+' | '=' => line_start,
+        '>' | '-' | '+' | '=' | ':' => line_start,
         '!' => next == Some('['),
         _ => false,
     };

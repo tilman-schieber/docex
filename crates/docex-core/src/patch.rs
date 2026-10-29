@@ -60,6 +60,77 @@ pub struct PatchCtx<'a> {
     /// New media parts to add to the package: (part name, bytes).
     pub media: Vec<(String, Vec<u8>)>,
     pub max_image_emu: u64,
+    /// Footnote label -> w:id for footnotes created by this edit.
+    pub note_refs: HashMap<String, String>,
+    /// Labels of new footnotes actually referenced.
+    pub used_notes: Vec<String>,
+}
+
+/// State carried from one patching pass (text boxes, body, notes) to the next.
+#[derive(Default)]
+pub struct Carry {
+    pub next_id: u32,
+    pub next_comment_id: u32,
+    pub warnings: Vec<String>,
+    pub stats: Stats,
+    pub new_comments: Vec<(u32, String)>,
+    pub media: Vec<(String, Vec<u8>)>,
+    pub rels_changed: bool,
+    pub numbering_changed: bool,
+    pub note_refs: HashMap<String, String>,
+    pub used_notes: Vec<String>,
+    pub max_image_emu: u64,
+}
+
+impl<'a> PatchCtx<'a> {
+    pub fn new(
+        opts: &'a Opts,
+        styles: &'a Styles,
+        rels: &'a mut Rels,
+        numbering: &'a mut Option<Document>,
+        blocks: &'a [Block],
+        c: Carry,
+    ) -> PatchCtx<'a> {
+        PatchCtx {
+            opts,
+            styles,
+            rels,
+            numbering,
+            blocks,
+            next_id: c.next_id,
+            warnings: c.warnings,
+            rels_changed: false,
+            numbering_changed: c.numbering_changed,
+            stats: c.stats,
+            next_comment_id: c.next_comment_id,
+            new_comments: c.new_comments,
+            media: c.media,
+            max_image_emu: c.max_image_emu,
+            note_refs: c.note_refs,
+            used_notes: c.used_notes,
+        }
+    }
+
+    /// End this pass. `rels_changed` is reported separately because each pass
+    /// may work on a different part's relationships.
+    pub fn finish(self) -> (Carry, bool) {
+        (
+            Carry {
+                next_id: self.next_id,
+                next_comment_id: self.next_comment_id,
+                warnings: self.warnings,
+                stats: self.stats,
+                new_comments: self.new_comments,
+                media: self.media,
+                rels_changed: false,
+                numbering_changed: self.numbering_changed,
+                note_refs: self.note_refs,
+                used_notes: self.used_notes,
+                max_image_emu: self.max_image_emu,
+            },
+            self.rels_changed,
+        )
+    }
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -748,7 +819,7 @@ fn new_obj(key: &str, cx: &mut PatchCtx) -> Option<Node> {
             }
         },
         k if k.starts_with("fn:") => {
-            cx.warnings.push(format!("new footnote reference [^{}] skipped", &k[3..]));
+            cx.warnings.push(format!("footnote reference [^{}] skipped: an existing footnote can't be referenced twice", &k[3..]));
             None
         }
         k => {
@@ -835,6 +906,66 @@ fn new_image(path: &str, cx: &mut PatchCtx) -> anyhow::Result<Node> {
         crate::xml::escape_attr(name)
     );
     Ok(crate::xml::Document::parse(&xml)?.root.into())
+}
+
+fn note_ref_rpr(styles: &Styles) -> Element {
+    match styles.char_style_named(&["footnote reference"]) {
+        Some(id) => Element::new("w:rPr").with_child(Element::new("w:rStyle").with_attr("w:val", id)),
+        None => Element::new("w:rPr").with_child(Element::new("w:vertAlign").with_attr("w:val", "superscript")),
+    }
+}
+
+/// A new `w:footnote` with the given paragraphs.
+pub fn new_footnote(id: &str, paras: &[EPara], cx: &mut PatchCtx) -> Element {
+    let ppr = cx
+        .styles
+        .by_id
+        .values()
+        .find(|s| !s.char_style && s.name == "footnote text")
+        .map(|s| Element::new("w:pPr").with_child(Element::new("w:pStyle").with_attr("w:val", s.id.clone())));
+    let mut note = Element::new("w:footnote").with_attr("w:id", id);
+    let empty = empty_cell();
+    let paras = if paras.is_empty() { &empty[..] } else { paras };
+    for (k, p) in paras.iter().enumerate() {
+        let Node::Element(mut el) = new_cell_para(p, ppr.clone(), None, cx) else { continue };
+        if k == 0 {
+            let pos = el.children.iter().position(|c| !matches!(c, Node::Element(e) if e.is("w:pPr"))).unwrap_or(el.children.len());
+            let mark = Element::new("w:r").with_child(note_ref_rpr(cx.styles)).with_child(Element::new("w:footnoteRef"));
+            let space = Element::new("w:r").with_child(text_el(" "));
+            el.children.insert(pos, space.into());
+            el.children.insert(pos, mark.into());
+        }
+        note.children.push(el.into());
+    }
+    note
+}
+
+/// The runs of a `SEQ` field (auto-numbered caption) showing `shown`.
+fn seq_field(label: &str, shown: &str) -> Vec<Node> {
+    let run = |c: Element| -> Node { Element::new("w:r").with_child(c).into() };
+    let mut instr = Element::new("w:instrText").with_attr("xml:space", "preserve");
+    instr.children.push(Node::Text(crate::xml::Text::new(format!(" SEQ {label} \\* ARABIC "))));
+    vec![
+        run(Element::new("w:fldChar").with_attr("w:fldCharType", "begin")),
+        run(instr),
+        run(Element::new("w:fldChar").with_attr("w:fldCharType", "separate")),
+        run(text_el(shown)),
+        run(Element::new("w:fldChar").with_attr("w:fldCharType", "end")),
+    ]
+}
+
+/// For a new caption like "Figure 3: ...", the atom range of the number and the label.
+fn caption_number(atoms: &[EAtom]) -> Option<(usize, usize, String)> {
+    let label: String = atoms.iter().map_while(|a| a.key.chars().next().filter(|c| c.is_alphabetic() && a.key.len() == c.len_utf8())).collect();
+    let n = label.chars().count();
+    if n == 0 || atoms.get(n).map(|a| a.key.as_str()) != Some(" ") {
+        return None;
+    }
+    let digits = atoms[n + 1..].iter().take_while(|a| a.key.len() == 1 && a.key.as_bytes()[0].is_ascii_digit()).count();
+    if digits == 0 {
+        return None;
+    }
+    Some((n + 1, n + 1 + digits, label))
 }
 
 struct Frame {
@@ -1020,6 +1151,17 @@ impl Builder<'_, '_> {
                         self.flush_text();
                         let n = deleted_node(&n, self.in_del());
                         self.run.as_mut().unwrap().1.children.push(n);
+                    }
+                    Content::NewObj(k) if k.starts_with("fn:") && self.cx.note_refs.contains_key(&k[3..]) => {
+                        // A reference to a new footnote: a superscript run of its own.
+                        self.close_run();
+                        let label = k[3..].to_string();
+                        let id = self.cx.note_refs[&label].clone();
+                        self.cx.used_notes.push(label);
+                        let run = Element::new("w:r")
+                            .with_child(note_ref_rpr(self.cx.styles))
+                            .with_child(Element::new("w:footnoteReference").with_attr("w:id", id));
+                        self.container().push(run.into());
                     }
                     Content::NewObj(k) => {
                         self.flush_text();
@@ -1290,8 +1432,22 @@ pub fn new_para(e: &EPara, near: Option<usize>, cx: &mut PatchCtx) -> Node {
     }
     let cm = CommentMarks::new(&e.comments, cx);
     let mut outs: Vec<Out> = Vec::new();
+    // "Figure 3: ..." in a new caption gets a real auto-numbering field.
+    let seq = if e.kind == Kind::Caption { caption_number(&e.atoms) } else { None };
     for (k, a) in e.atoms.iter().enumerate() {
         cm.before(k, &mut outs, None);
+        if let Some((s, end, label)) = &seq {
+            if k == *s {
+                let shown: String = e.atoms[*s..*end].iter().map(|a| a.key.as_str()).collect();
+                let ctx = if tracked { vec![CtxEl::NewIns(1)] } else { vec![] };
+                for n in seq_field(label, &shown) {
+                    outs.push(Out { ctx: ctx.clone(), run: None, content: Content::Node(n) });
+                }
+            }
+            if k >= *s && k < *end {
+                continue;
+            }
+        }
         if a.st != Status::Del {
             let mut ctx = Vec::new();
             if let Some(l) = &a.link {
@@ -1365,7 +1521,7 @@ pub fn mark_deleted(e: &mut Element, cx: &mut PatchCtx) {
 }
 
 // ---------------------------------------------------------------------------
-// Tables
+// Tables and other paragraph containers
 
 fn row_key(r: &[Vec<EPara>]) -> String {
     r.iter()
@@ -1378,48 +1534,63 @@ fn row_text(r: &[Vec<EPara>]) -> String {
     r.iter().flat_map(|c| c.iter().map(|p| p.text())).collect::<Vec<_>>().join(" ")
 }
 
-/// Patch the paragraphs of one cell. Returns `None` if unchanged.
-fn patch_cell(tc: &Element, cell: &crate::model::Cell, orig: &[EPara], new: &[EPara], cx: &mut PatchCtx) -> Option<Element> {
-    if orig.len() != cell.paras.len() {
-        cx.warnings.push("table cell layout mismatch; cell left unchanged".into());
+fn empty_cell() -> Vec<EPara> {
+    vec![EPara { kind: Kind::Normal, atoms: Vec::new(), comments: Vec::new() }]
+}
+
+/// Patch the paragraphs of a container (table cell, footnote). The container
+/// always keeps at least one paragraph. Returns `None` if unchanged.
+pub fn patch_paras(container: &Element, paras: &[Para], orig: &[EPara], new: &[EPara], cx: &mut PatchCtx) -> Option<Element> {
+    if orig.len() != paras.len() {
+        cx.warnings.push("paragraph layout mismatch in a table cell or note; left unchanged".into());
         return None;
     }
     let ok: Vec<String> = orig.iter().map(|p| atoms_key(&p.atoms)).collect();
     let nk: Vec<String> = new.iter().map(|p| atoms_key(&p.atoms)).collect();
-    if ok == nk {
+    let o_cm: Vec<usize> = orig.iter().map(|p| p.comments.len()).collect();
+    let n_cm: Vec<usize> = new.iter().map(|p| p.comments.len()).collect();
+    if ok == nk && o_cm == n_cm {
         return None;
     }
     let ops = align(&ok, &nk, |i, j| similarity(&orig[i].text(), &new[j].text()));
+    let at = |p: &Para| *p.path.last().unwrap();
     let mut sp = Splice::default();
     let mut anchor: Option<usize> = None;
     let mut front = Vec::new();
+    let (t_ppr, t_rpr) = para_template(paras.first());
     for op in ops {
         match op {
-            Align::Keep(i, _) => anchor = Some(cell.paras[i].path[3]),
-            Align::Modify(i, j) => {
-                let p = &cell.paras[i];
-                if let Some(r) = patch_para(p, &orig[i], Some(&new[j]), None, cx) {
-                    sp.replace.insert(p.path[3], r);
+            Align::Keep(i, j) => {
+                let p = &paras[i];
+                // Same text, maybe a new comment.
+                if !new[j].comments.is_empty() {
+                    if let Some(r) = patch_para(p, &orig[i], Some(&new[j]), None, cx) {
+                        sp.replace.insert(at(p), r);
+                    }
                 }
-                anchor = Some(p.path[3]);
+                anchor = Some(at(p));
+            }
+            Align::Modify(i, j) => {
+                let p = &paras[i];
+                if let Some(r) = patch_para(p, &orig[i], Some(&new[j]), None, cx) {
+                    sp.replace.insert(at(p), r);
+                }
+                anchor = Some(at(p));
             }
             Align::Delete(i) => {
-                let p = &cell.paras[i];
-                // A cell must keep at least one paragraph.
-                if cell.paras.len() == 1 || new.is_empty() {
+                let p = &paras[i];
+                if paras.len() == 1 || new.is_empty() {
                     let empty = EPara { kind: orig[i].kind, atoms: Vec::new(), comments: Vec::new() };
                     if let Some(r) = patch_para(p, &orig[i], Some(&empty), None, cx) {
-                        sp.replace.insert(p.path[3], r);
+                        sp.replace.insert(at(p), r);
                     }
                 } else if let Some(r) = patch_para(p, &orig[i], None, None, cx) {
-                    sp.replace.insert(p.path[3], r);
+                    sp.replace.insert(at(p), r);
                 }
-                anchor = Some(p.path[3]);
+                anchor = Some(at(p));
             }
             Align::Insert(j) => {
-                let mut e = new[j].clone();
-                e.kind = cell.paras.first().map(|p| p.kind).unwrap_or(Kind::Normal);
-                let n = new_cell_para(&e, cell.paras.first(), cx);
+                let n = new_cell_para(&new[j], t_ppr.clone(), t_rpr.clone(), cx);
                 match anchor {
                     Some(a) => sp.after.entry(a).or_default().push(n),
                     None => front.push(n),
@@ -1428,47 +1599,66 @@ fn patch_cell(tc: &Element, cell: &crate::model::Cell, orig: &[EPara], new: &[EP
         }
     }
     if !front.is_empty() {
-        if let Some(p) = cell.paras.first() {
-            sp.before.insert(p.path[3], front);
+        if let Some(p) = paras.first() {
+            sp.before.insert(at(p), front);
         }
     }
-    let mut tc = tc.clone();
-    sp.apply(&mut tc.children);
-    Some(tc)
+    if sp.is_empty() {
+        return None;
+    }
+    let mut c = container.clone();
+    sp.apply(&mut c.children);
+    Some(c)
 }
 
-/// New paragraph inside a table cell, formatted like `tmpl`.
-fn new_cell_para(e: &EPara, tmpl: Option<&Para>, cx: &mut PatchCtx) -> Node {
-    let mut ppr = tmpl.and_then(|t| t.ppr.clone()).unwrap_or_else(|| Element::new("w:pPr"));
+/// Paragraph and run properties to give new paragraphs that look like `p`.
+fn para_template(p: Option<&Para>) -> (Option<Element>, Option<Element>) {
+    let ppr = p.and_then(|t| t.ppr.clone());
+    let rpr = p
+        .and_then(|t| t.visible().find(|(_, i)| t.status(i) != Status::Del).and_then(|(_, i)| i.run).map(|r| (t, r)))
+        .and_then(|(t, r)| t.runs[r].rpr.clone())
+        .map(|r| strip_rpr(&r));
+    (ppr, rpr)
+}
+
+/// New paragraph inside a table cell or note, with the given template properties.
+pub fn new_cell_para(e: &EPara, ppr: Option<Element>, rpr: Option<Element>, cx: &mut PatchCtx) -> Node {
+    let mut ppr = ppr.unwrap_or_else(|| Element::new("w:pPr"));
     ppr.remove_children("w:pPrChange");
     ppr.remove_children("w:sectPr");
     if let Some(r) = ppr.child_mut("w:rPr") {
         *r = strip_rpr(r);
     }
-    let rpr = tmpl
-        .and_then(|t| t.visible().find_map(|(_, i)| i.run))
-        .and_then(|r| tmpl.unwrap().runs[r].rpr.clone())
-        .map(|r| strip_rpr(&r));
     let tracked = cx.opts.tracked;
     if tracked {
         let ins = cx.change_el("w:ins");
         mark_rpr(&mut ppr).insert_ordered(ins, RPR_ORDER);
     }
-    let outs: Vec<Out> = e
-        .atoms
-        .iter()
-        .filter(|a| a.st != Status::Del)
-        .map(|a| Out {
-            ctx: if tracked || a.st == Status::Ins { vec![CtxEl::NewIns(1)] } else { vec![] },
-            run: Some(RunKey::New { tmpl: None, marks: a.marks, link: false }),
-            content: if a.key.chars().count() == 1 && a.key != "\t" && a.key != "\n" {
-                Content::Char(a.key.chars().next().unwrap())
-            } else {
-                Content::NewObj(a.key.clone())
-            },
-        })
-        .collect();
-    cx.stats.insertions += outs.len();
+    let cm = CommentMarks::new(&e.comments, cx);
+    let mut outs: Vec<Out> = Vec::new();
+    for (k, a) in e.atoms.iter().enumerate() {
+        cm.before(k, &mut outs, None);
+        if a.st != Status::Del {
+            let mut ctx = Vec::new();
+            if let Some(l) = &a.link {
+                ctx.push(CtxEl::Link(l.clone()));
+            }
+            if tracked || a.st == Status::Ins {
+                ctx.push(CtxEl::NewIns(1));
+            }
+            cx.stats.insertions += 1;
+            outs.push(Out {
+                ctx,
+                run: Some(RunKey::New { tmpl: None, marks: a.marks, link: a.link.is_some() }),
+                content: if a.key.chars().count() == 1 && a.key != "\t" && a.key != "\n" {
+                    Content::Char(a.key.chars().next().unwrap())
+                } else {
+                    Content::NewObj(a.key.clone())
+                },
+            });
+        }
+        cm.after(k, &mut outs, None);
+    }
     let body = build(None, rpr, outs, cx);
     let mut p = Element::new("w:p");
     if !ppr.children.is_empty() {
@@ -1495,11 +1685,11 @@ fn new_row(tmpl: &Element, t_row: &crate::model::Row, cells: &[Vec<EPara>], cx: 
                 if let Some(pr) = e.child("w:tcPr") {
                     tc.children.push(pr.clone().into());
                 }
-                let tmpl_para = t_row.cells.get(ci).and_then(|c| c.paras.first());
-                let empty = vec![EPara { kind: Kind::Normal, atoms: Vec::new(), comments: Vec::new() }];
+                let (ppr, rpr) = para_template(t_row.cells.get(ci).and_then(|c| c.paras.first()));
+                let empty = empty_cell();
                 let paras = cells.get(ci).filter(|c| !c.is_empty()).unwrap_or(&empty);
                 for p in paras {
-                    tc.children.push(new_cell_para(p, tmpl_para, cx));
+                    tc.children.push(new_cell_para(p, ppr.clone(), rpr.clone(), cx));
                 }
                 tr.children.push(tc.into());
                 ci += 1;
@@ -1541,28 +1731,14 @@ pub fn patch_table(
     let mut front = Vec::new();
     for op in ops {
         match op {
+            Align::Keep(i, j) if new[j].iter().any(|c| c.iter().any(|p| !p.comments.is_empty())) => {
+                patch_row(t, tbl, i, j, orig, new, &mut sp, cx);
+                anchor = Some(t.rows[i].child_idx);
+            }
             Align::Keep(i, _) => anchor = Some(t.rows[i].child_idx),
             Align::Modify(i, j) => {
-                let row = &t.rows[i];
-                let Node::Element(tr) = &tbl.children[row.child_idx] else { continue };
-                let mut tr = tr.clone();
-                let mut changed = false;
-                if new[j].len() > row.cells.len() && new[j][row.cells.len()..].iter().any(|c| c.iter().any(|p| !p.atoms.is_empty())) {
-                    cx.warnings.push(format!("table b{}: adding columns is not supported; extra cells dropped", t.idx));
-                }
-                for (ci, cell) in row.cells.iter().enumerate() {
-                    let empty = vec![EPara { kind: Kind::Normal, atoms: Vec::new(), comments: Vec::new() }];
-                    let nc = new[j].get(ci).unwrap_or(&empty);
-                    let Node::Element(tc) = &tr.children[row.cell_idx[ci]] else { continue };
-                    if let Some(ntc) = patch_cell(tc, cell, &orig[i][ci], nc, cx) {
-                        tr.children[row.cell_idx[ci]] = ntc.into();
-                        changed = true;
-                    }
-                }
-                if changed {
-                    sp.replace.insert(row.child_idx, vec![tr.into()]);
-                }
-                anchor = Some(row.child_idx);
+                patch_row(t, tbl, i, j, orig, new, &mut sp, cx);
+                anchor = Some(t.rows[i].child_idx);
             }
             Align::Delete(i) => {
                 let row = &t.rows[i];
@@ -1577,9 +1753,7 @@ pub fn patch_table(
                 anchor = Some(row.child_idx);
             }
             Align::Insert(j) => {
-                let ti = anchor
-                    .and_then(|a| t.rows.iter().position(|r| r.child_idx == a))
-                    .unwrap_or(0);
+                let ti = anchor.and_then(|a| t.rows.iter().position(|r| r.child_idx == a)).unwrap_or(0);
                 let Some(trow) = t.rows.get(ti) else { continue };
                 let Node::Element(tmpl) = &tbl.children[trow.child_idx] else { continue };
                 let n = new_row(tmpl, trow, &new[j], cx);
@@ -1598,9 +1772,32 @@ pub fn patch_table(
     if sp.is_empty() {
         return None;
     }
-    let mut tbl = tbl.clone();
-    sp.apply(&mut tbl.children);
-    Some(tbl)
+    let mut out = tbl.clone();
+    sp.apply(&mut out.children);
+    Some(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn patch_row(t: &Table, tbl: &Element, i: usize, j: usize, orig: &[Vec<Vec<EPara>>], new: &[Vec<Vec<EPara>>], sp: &mut Splice, cx: &mut PatchCtx) {
+    let row = &t.rows[i];
+    let Node::Element(tr) = &tbl.children[row.child_idx] else { return };
+    let mut tr = tr.clone();
+    let mut changed = false;
+    if new[j].len() > row.cells.len() && new[j][row.cells.len()..].iter().any(|c| c.iter().any(|p| !p.atoms.is_empty())) {
+        cx.warnings.push(format!("table b{}: adding columns is not supported; extra cells dropped", t.idx));
+    }
+    let empty = empty_cell();
+    for (ci, cell) in row.cells.iter().enumerate() {
+        let nc = new[j].get(ci).unwrap_or(&empty);
+        let Node::Element(tc) = &tr.children[row.cell_idx[ci]] else { continue };
+        if let Some(ntc) = patch_paras(tc, &cell.paras, &orig[i][ci], nc, cx) {
+            tr.children[row.cell_idx[ci]] = ntc.into();
+            changed = true;
+        }
+    }
+    if changed {
+        sp.replace.insert(row.child_idx, vec![tr.into()]);
+    }
 }
 
 /// A brand-new table from Markdown rows.
@@ -1662,7 +1859,7 @@ pub fn new_table(rows: &[Vec<Vec<EPara>>], cx: &mut PatchCtx) -> Node {
                         a.marks.bold = true;
                     }
                 }
-                tc.children.push(new_cell_para(&p, None, cx));
+                tc.children.push(new_cell_para(&p, None, None, cx));
             }
             tr.children.push(tc.into());
         }

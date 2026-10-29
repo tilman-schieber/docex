@@ -95,6 +95,25 @@ pub struct Table {
     pub simple: bool,
 }
 
+/// A footnote or endnote, labelled as in Markdown (`3`, endnotes `e3`).
+#[derive(Clone, Debug)]
+pub struct Note {
+    pub label: String,
+    pub paras: Vec<Para>,
+}
+
+/// A text box (Word "Textfeld"): its paragraphs and where its content lives.
+#[derive(Clone, Debug)]
+pub struct TextBox {
+    pub id: String,
+    /// Body index of the block the box is anchored in.
+    pub anchor: usize,
+    /// Paths from `w:body` to each copy of the box content (`w:txbxContent`;
+    /// modern and VML fallback). Paragraph paths are relative to the first.
+    pub targets: Vec<Vec<usize>>,
+    pub paras: Vec<Para>,
+}
+
 #[derive(Clone, Debug)]
 pub enum Block {
     Para(Para),
@@ -252,6 +271,76 @@ pub fn project(body: &Element, cx: &Ctx) -> Vec<Block> {
         }
     }
     out
+}
+
+/// Paragraphs of a container element (`w:txbxContent`, `w:footnote`), with
+/// paths relative to `prefix`.
+pub fn container_paras(e: &Element, prefix: &[usize], cx: &Ctx) -> Vec<Para> {
+    e.children
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| match c {
+            Node::Element(p) if p.is("w:p") => {
+                let mut path = prefix.to_vec();
+                path.push(i);
+                Some(para(p, path, cx))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// All text boxes in the body, in document order.
+pub fn text_boxes(body: &Element, cx: &Ctx) -> Vec<TextBox> {
+    fn contents(e: &Element, path: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+        for (i, c) in e.children.iter().enumerate() {
+            let Node::Element(c) = c else { continue };
+            path.push(i);
+            if c.is("w:txbxContent") {
+                out.push(path.clone());
+            } else {
+                contents(c, path, out);
+            }
+            path.pop();
+        }
+    }
+    fn objects(e: &Element, path: &mut Vec<usize>, anchor: usize, out: &mut Vec<(usize, Vec<Vec<usize>>)>) {
+        for (i, c) in e.children.iter().enumerate() {
+            let Node::Element(c) = c else { continue };
+            path.push(i);
+            if matches!(c.name.as_str(), "mc:AlternateContent" | "w:drawing" | "w:pict") {
+                let mut targets = Vec::new();
+                let mut sub = path.clone();
+                contents(c, &mut sub, &mut targets);
+                if !targets.is_empty() {
+                    out.push((anchor, targets));
+                }
+            } else if !c.is("w:txbxContent") {
+                objects(c, path, anchor, out);
+            }
+            path.pop();
+        }
+    }
+    let mut found = Vec::new();
+    for (i, c) in body.children.iter().enumerate() {
+        if let Node::Element(e) = c {
+            if e.is("w:p") || e.is("w:tbl") {
+                let mut path = vec![i];
+                objects(e, &mut path, i, &mut found);
+            }
+        }
+    }
+    found
+        .into_iter()
+        .enumerate()
+        .filter_map(|(n, (anchor, targets))| {
+            let mut cur = body;
+            for i in &targets[0] {
+                cur = cur.children.get(*i)?.as_element()?;
+            }
+            Some(TextBox { id: format!("tb{}", n + 1), anchor, paras: container_paras(cur, &targets[0], cx), targets })
+        })
+        .collect()
 }
 
 fn opaque_label(e: &Element) -> String {

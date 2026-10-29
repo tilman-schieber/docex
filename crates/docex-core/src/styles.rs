@@ -13,6 +13,8 @@ pub enum Kind {
     Number(u8),
     Quote,
     Code,
+    /// Figure / table captions (`: Figure 1: ...`).
+    Caption,
 }
 
 impl Kind {
@@ -124,6 +126,9 @@ impl Styles {
             "source code" | "code" | "html preformatted" | "plain text" => return Some(Kind::Code),
             _ => {}
         }
+        if n.ends_with("caption") || n == "beschriftung" {
+            return Some(Kind::Caption);
+        }
         if n.contains("code") || n.contains("preformatted") {
             return Some(Kind::Code);
         }
@@ -214,6 +219,7 @@ impl Styles {
             Kind::Heading(_) => &["heading 6"],
             Kind::Quote => &["quote", "block text", "intense quote"],
             Kind::Code => &["source code", "code", "html preformatted", "plain text"],
+            Kind::Caption => &["caption", "image caption", "table caption"],
             Kind::Bullet(_) => &["list bullet", "list paragraph"],
             Kind::Number(_) => &["list number", "list paragraph"],
         };

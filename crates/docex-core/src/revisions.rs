@@ -27,6 +27,10 @@ pub struct Change {
     pub author: String,
     pub date: String,
     pub text: String,
+    /// Where the change is: "body", "footnotes" or "endnotes".
+    pub part: String,
+    #[serde(skip)]
+    pub scope: usize,
     /// The XML elements making up this change (a paragraph's text and its
     /// mark, a row and its cells, ...).
     #[serde(skip)]
@@ -162,6 +166,8 @@ fn collect(e: &Element, path: &mut Vec<usize>, names: &mut Vec<String>, out: &mu
                 .unwrap_or_else(|| path[..path.len() - 1].to_vec());
             out.push(Change {
                 n: 0,
+                part: "body".into(),
+                scope: 0,
                 kind,
                 author: c.attr("w:author").unwrap_or("").to_string(),
                 date: c.attr("w:date").unwrap_or("").to_string(),
@@ -170,7 +176,10 @@ fn collect(e: &Element, path: &mut Vec<usize>, names: &mut Vec<String>, out: &mu
             });
         }
         names.push(c.name.clone());
-        collect(c, path, names, out);
+        // Text box content exists twice (modern + VML fallback); list it once.
+        if !c.is("mc:Fallback") {
+            collect(c, path, names, out);
+        }
         names.pop();
         path.pop();
     }
@@ -335,4 +344,32 @@ pub fn resolve(root: &mut Element, changes: &[Change], accept: bool) -> usize {
         }
     }
     changes.len()
+}
+
+/// Make the VML fallback copy of each text box match its modern copy.
+pub fn sync_fallbacks(root: &mut Element) {
+    root.visit_mut(&mut |e| {
+        if !e.is("mc:AlternateContent") {
+            return;
+        }
+        let mut modern = Vec::new();
+        if let Some(choice) = e.child("mc:Choice") {
+            choice.descendants("w:txbxContent", &mut modern);
+        }
+        let modern: Vec<Element> = modern.into_iter().cloned().collect();
+        if modern.is_empty() {
+            return;
+        }
+        if let Some(fb) = e.child_mut("mc:Fallback") {
+            let mut k = 0;
+            fb.visit_mut(&mut |x| {
+                if x.is("w:txbxContent") {
+                    if let Some(m) = modern.get(k) {
+                        x.children = m.children.clone();
+                    }
+                    k += 1;
+                }
+            });
+        }
+    });
 }

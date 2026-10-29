@@ -218,3 +218,85 @@ fn new_document_from_markdown() {
     assert!(out.contains("1. one\n1. two"), "{out}");
     assert!(out.contains("| **1** | **2** |") || out.contains("| 1 | 2 |"), "{out}");
 }
+
+fn fixture(name: &str) -> Docx {
+    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures").join(name);
+    Docx::open(&p).unwrap()
+}
+
+#[test]
+fn edit_existing_footnote_tracked() {
+    let mut d = fixture("rich.docx");
+    let md = d.render(View::Review).replace("[^13]: The footnote text.", "[^13]: The revised footnote text.\n\n    A second paragraph.");
+    let r = d.apply(&md, &opts(true)).unwrap();
+    assert!(r.changed(), "{r:?}");
+    let mut d = reopen(&mut d);
+    let md = d.render(View::Review);
+    assert!(md.contains("[^13]: The {++revised ++}footnote text.\n\n    {++A second paragraph.++}"), "{md}");
+    let ch = d.changes();
+    assert!(ch.iter().all(|c| c.part == "footnotes"), "{ch:?}");
+    d.resolve_changes(&[], None, true).unwrap();
+    let d = reopen(&mut d);
+    assert!(d.changes().is_empty());
+    assert!(d.render(View::Review).contains("[^13]: The revised footnote text.\n\n    A second paragraph."));
+}
+
+#[test]
+fn new_footnote_creates_part_and_reference() {
+    let mut d = docx(WORDY);
+    let md = d.render(View::Review).replace("Second clause stays.", "Second clause stays.[^n1]\n\n[^n1]: Says who?");
+    let r = d.apply(&md, &opts(true)).unwrap();
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    let d = reopen(&mut d);
+    let md = d.render(View::Review);
+    assert!(md.contains("Second clause stays.{++[^1]++}"), "{md}");
+    assert!(md.contains("[^1]: {++Says who?++}"), "{md}");
+    let xml = d.dom.to_xml();
+    assert!(xml.contains(r#"<w:footnoteReference w:id="1"/>"#));
+    assert!(d.pkg.has("word/footnotes.xml"));
+    assert!(d.pkg.read_string("[Content_Types].xml").unwrap().contains("footnotes+xml"));
+}
+
+const BOXED: &str = r#"<w:p><w:r><mc:AlternateContent><mc:Choice Requires="wps"><w:drawing><wp:anchor><wp:docPr id="1" name="Text Box 1"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp><wps:txbx><w:txbxContent><w:p><w:r><w:t>Box text here.</w:t></w:r></w:p></w:txbxContent></wps:txbx><wps:bodyPr/></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></mc:Choice><mc:Fallback><w:pict><v:shape><v:textbox><w:txbxContent><w:p><w:r><w:t>Box text here.</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></mc:Fallback></mc:AlternateContent></w:r><w:r><w:t>Anchor text.</w:t></w:r></w:p><w:p><w:r><w:t>After.</w:t></w:r></w:p>"#;
+
+#[test]
+fn text_box_edit_updates_both_copies() {
+    let mut d = docx(BOXED);
+    let md = d.render(View::Review);
+    assert!(md.contains("<!-- docex:textbox tb1 -->\n\nBox text here.\n\n<!-- /docex:textbox -->"), "{md}");
+    let before = d.dom.to_xml();
+    assert!(!d.apply(&md, &opts(true)).unwrap().changed());
+    assert_eq!(d.dom.to_xml(), before);
+    let md = md.replace("Box text here.", "Box text changed here.\n\nAnd more.");
+    d.apply(&md, &opts(true)).unwrap();
+    let mut d = reopen(&mut d);
+    let xml = d.dom.to_xml();
+    assert_eq!(xml.matches("changed ").count(), 2, "both copies patched: {xml}");
+    assert!(d.render(View::Review).contains("Box text {++changed ++}here.\n\n{++And more.++}"));
+    // Changes are listed once although stored twice; accepting updates both copies.
+    let n = d.changes().len();
+    d.resolve_changes(&[], None, true).unwrap();
+    let d = reopen(&mut d);
+    assert!(d.changes().is_empty(), "had {n}");
+    let xml = d.dom.to_xml();
+    assert_eq!(xml.matches("changed ").count(), 2);
+    assert!(!xml.contains("<w:ins "), "{xml}");
+    assert!(d.render(View::Review).contains("\n\nBox text changed here.\n\nAnd more.\n\n"));
+}
+
+#[test]
+fn captions() {
+    let body = r#"<w:p><w:pPr><w:pStyle w:val="Caption"/></w:pPr><w:r><w:t xml:space="preserve">Figure </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> SEQ Figure \* ARABIC </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t>: A cat.</w:t></w:r></w:p><w:p><w:r><w:t>: not a caption</w:t></w:r></w:p>"#;
+    let mut d = docx(body);
+    let md = d.render(View::Review);
+    assert!(md.contains("\n: Figure 1: A cat.\n"), "{md}");
+    assert!(md.contains("\\: not a caption"), "{md}");
+    assert!(!d.apply(&md, &opts(true)).unwrap().changed());
+    let md = md.replace(": Figure 1: A cat.", ": Figure 1: A black cat.\n\n: Figure 2: A dog.");
+    d.apply(&md, &opts(false)).unwrap();
+    let d = reopen(&mut d);
+    let xml = d.dom.to_xml();
+    assert_eq!(xml.matches("SEQ Figure").count(), 2, "{xml}");
+    assert_eq!(xml.matches(r#"<w:pStyle w:val="Caption"/>"#).count(), 2);
+    assert!(d.render(View::Review).contains(": Figure 2: A dog."));
+}

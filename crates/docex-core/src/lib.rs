@@ -14,9 +14,9 @@ pub mod xml;
 
 use anyhow::{bail, Context, Result};
 use comments::{Comment, Comments};
-use model::{Block, Ctx};
+use model::{Block, Ctx, Note, TextBox};
 use package::{Package, Rels};
-use patch::{align, block_sim, Align, Opts, PatchCtx, Splice, Stats};
+use patch::{align, block_sim, Align, Carry, Opts, PatchCtx, Splice, Stats};
 use render::{RenderCtx, View};
 use revisions::Change;
 use std::collections::HashSet;
@@ -39,6 +39,8 @@ const SETTINGS_ORDER: &[&str] = &[
     "w:linkStyles", "w:stylePaneFormatFilter", "w:stylePaneSortMethod", "w:documentType", "w:mailMerge",
     "w:revisionView", "w:trackRevisions",
 ];
+const REL_FOOTNOTES: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes";
+const CT_FOOTNOTES: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml";
 const REL_NUMBERING: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering";
 const CT_NUMBERING: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml";
 
@@ -49,12 +51,44 @@ pub struct Docx {
     pub styles: Styles,
     pub rels: Rels,
     pub comments: Comments,
-    /// Footnotes and endnotes: (label, text).
-    pub notes: Vec<(String, String)>,
+    /// Footnotes and endnotes parts.
+    notes: Vec<NotePart>,
     numbering_part: String,
     numbering: Option<Document>,
     numbering_existed: bool,
     dirty: Dirty,
+}
+
+struct NotePart {
+    /// "footnote" or "endnote"
+    kind: &'static str,
+    /// Label prefix in Markdown: "" for footnotes, "e" for endnotes.
+    prefix: &'static str,
+    part: String,
+    rels: Rels,
+    doc: Option<Document>,
+    existed: bool,
+    dirty: bool,
+    rels_dirty: bool,
+}
+
+impl NotePart {
+    fn load(pkg: &Package, rels: &Rels, kind: &'static str, prefix: &'static str) -> Result<NotePart> {
+        let part = rels
+            .find_by_type(&format!("/{kind}s"))
+            .map(|r| rels.resolve(r.target))
+            .unwrap_or_else(|| format!("word/{kind}s.xml"));
+        let doc = if rels.find_by_type(&format!("/{kind}s")).is_some() { pkg.read_xml_opt(&part)? } else { None };
+        Ok(NotePart { kind, prefix, rels: Rels::load(pkg, &part)?, existed: doc.is_some(), doc, part, dirty: false, rels_dirty: false })
+    }
+
+    /// Index in the root's children of the note with this label.
+    fn find(&self, label: &str) -> Option<usize> {
+        let id = label.strip_prefix(self.prefix)?;
+        self.doc.as_ref()?.root.children.iter().position(|c| {
+            matches!(c, Node::Element(e) if e.local() == self.kind && e.attr("w:id") == Some(id))
+        })
+    }
 }
 
 #[derive(Default)]
@@ -101,27 +135,6 @@ pub fn now_iso() -> String {
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
-fn note_texts(pkg: &Package, rels: &Rels, kind: &str, prefix: &str) -> Result<Vec<(String, String)>> {
-    let Some(r) = rels.find_by_type(&format!("/{kind}s")) else { return Ok(Vec::new()) };
-    let part = rels.resolve(r.target);
-    let Some(doc) = pkg.read_xml_opt(&part)? else { return Ok(Vec::new()) };
-    let mut out = Vec::new();
-    for n in doc.root.elements().filter(|e| e.local() == kind) {
-        if n.attr("w:type").is_some_and(|t| t != "normal") {
-            continue;
-        }
-        let mut s = String::new();
-        n.visit(&mut |e| match e.name.as_str() {
-            "w:t" => s.push_str(&e.text_content()),
-            "w:tab" => s.push(' '),
-            "w:p" if !s.is_empty() => s.push(' '),
-            _ => {}
-        });
-        out.push((format!("{prefix}{}", n.attr("w:id").unwrap_or("")), s.trim().to_string()));
-    }
-    Ok(out)
-}
-
 impl Docx {
     pub fn open(path: &Path) -> Result<Docx> {
         Docx::from_package(Package::open(path)?)
@@ -160,8 +173,7 @@ impl Docx {
         };
         let styles = Styles::load(styles_doc.as_ref(), numbering.as_ref());
         let comments = Comments::load(&pkg, &rels)?;
-        let mut notes = note_texts(&pkg, &rels, "footnote", "")?;
-        notes.extend(note_texts(&pkg, &rels, "endnote", "e")?);
+        let notes = vec![NotePart::load(&pkg, &rels, "footnote", "")?, NotePart::load(&pkg, &rels, "endnote", "e")?];
         Ok(Docx { pkg, main, dom, styles, rels, comments, notes, numbering_part, numbering, numbering_existed, dirty: Dirty::default() })
     }
 
@@ -177,7 +189,31 @@ impl Docx {
         model::project(self.body(), &Ctx { styles: &self.styles, rels: &self.rels })
     }
 
-    fn render_ctx(&self, view: View) -> RenderCtx<'_> {
+    /// Footnotes and endnotes as paragraph projections.
+    pub fn notes(&self) -> Vec<Note> {
+        let mut out = Vec::new();
+        for np in &self.notes {
+            let Some(doc) = &np.doc else { continue };
+            let cx = Ctx { styles: &self.styles, rels: &np.rels };
+            for (k, c) in doc.root.children.iter().enumerate() {
+                let Node::Element(e) = c else { continue };
+                if e.local() != np.kind || e.attr("w:type").is_some_and(|t| t != "normal") {
+                    continue;
+                }
+                out.push(Note {
+                    label: format!("{}{}", np.prefix, e.attr("w:id").unwrap_or("")),
+                    paras: model::container_paras(e, &[k], &cx),
+                });
+            }
+        }
+        out
+    }
+
+    pub fn text_boxes(&self) -> Vec<TextBox> {
+        model::text_boxes(self.body(), &Ctx { styles: &self.styles, rels: &self.rels })
+    }
+
+    fn render_ctx<'a>(&'a self, view: View, notes: &'a [Note], boxes: &'a [TextBox]) -> RenderCtx<'a> {
         let mut ranged = HashSet::new();
         self.body().visit(&mut |e| {
             if e.is("w:commentRangeEnd") {
@@ -186,12 +222,27 @@ impl Docx {
                 }
             }
         });
-        RenderCtx { view, comments: &self.comments, ranged, notes: &self.notes }
+        for np in &self.notes {
+            if let Some(d) = &np.doc {
+                d.root.visit(&mut |e| {
+                    if e.is("w:commentRangeEnd") {
+                        if let Some(id) = e.attr("w:id") {
+                            ranged.insert(id.to_string());
+                        }
+                    }
+                });
+            }
+        }
+        RenderCtx { view, comments: &self.comments, ranged, notes, boxes }
+    }
+
+    fn render_full(&self, view: View) -> render::Rendered {
+        let (blocks, notes, boxes) = (self.blocks(), self.notes(), self.text_boxes());
+        render::render(&blocks, &self.render_ctx(view, &notes, &boxes))
     }
 
     pub fn render(&self, view: View) -> String {
-        let blocks = self.blocks();
-        render::render(&blocks, &self.render_ctx(view)).0
+        self.render_full(view).md
     }
 
     /// Usable text width of the (last) section, in EMU.
@@ -206,54 +257,97 @@ impl Docx {
 
     fn max_change_id(&self) -> u32 {
         let mut max = 0u32;
-        self.dom.root.visit(&mut |e| {
-            if !e.name.starts_with("w:bookmark") && !e.name.starts_with("w:comment") {
+        let mut visit = |e: &Element| {
+            if !e.name.starts_with("w:bookmark") && !e.name.starts_with("w:comment") && !e.name.ends_with("note") {
                 if let Some(v) = e.attr("w:id").and_then(|v| v.parse::<u32>().ok()) {
                     max = max.max(v);
                 }
             }
-        });
+        };
+        self.dom.root.visit(&mut visit);
+        for np in &self.notes {
+            if let Some(d) = &np.doc {
+                d.root.visit(&mut visit);
+            }
+        }
         max
     }
 
     /// Apply an edited Markdown version of this document.
     pub fn apply(&mut self, edited: &str, opts: &Opts) -> Result<Report> {
-        let blocks = self.blocks();
-        let (orig_md, map) = render::render(&blocks, &self.render_ctx(View::Review));
-        let orig = mdparse::parse(&orig_md);
-        if orig.len() != map.len() {
+        let r0 = self.render_full(View::Review);
+        let orig = mdparse::parse_full(&r0.md);
+        if orig.blocks.len() != r0.map.len() {
             bail!(
                 "internal error: the rendered document reparses into {} blocks, expected {} (please report this with the file)",
-                orig.len(),
-                map.len()
+                orig.blocks.len(),
+                r0.map.len()
             );
         }
-        let new = mdparse::parse(edited);
-        let ok: Vec<String> = orig.iter().map(|b| b.key()).collect();
-        let nk: Vec<String> = new.iter().map(|b| b.key()).collect();
-        let ops = align(&ok, &nk, |i, j| block_sim(&orig[i], &new[j]));
-
-        let mut numbering = self.numbering.take();
-        let next_id = self.max_change_id();
-        let next_comment_id = self.comments.next_id(&self.dom.root);
-        let max_image_emu = self.text_width_emu();
-        let body_el = self.body().clone();
-        let mut cx = PatchCtx {
-            opts,
-            styles: &self.styles,
-            rels: &mut self.rels,
-            numbering: &mut numbering,
-            blocks: &blocks,
-            next_id,
-            warnings: Vec::new(),
-            rels_changed: false,
-            numbering_changed: false,
-            stats: Stats::default(),
-            next_comment_id,
-            new_comments: Vec::new(),
-            media: Vec::new(),
-            max_image_emu,
+        let new = mdparse::parse_full(edited);
+        let mut carry = Carry {
+            next_id: self.max_change_id(),
+            next_comment_id: self.comments.next_id(&self.dom.root),
+            max_image_emu: self.text_width_emu(),
+            ..Default::default()
         };
+        let mut numbering = self.numbering.take();
+
+        // 1. Text boxes, patched in place in the body DOM.
+        let boxes0 = self.text_boxes();
+        for (k, used) in &r0.boxes {
+            let b = &boxes0[*k];
+            let (Some((_, o)), Some((_, n))) = (orig.boxes.iter().find(|x| x.0 == b.id), new.boxes.iter().find(|x| x.0 == b.id)) else {
+                continue;
+            };
+            let paras: Vec<model::Para> = used.iter().map(|i| b.paras[*i].clone()).collect();
+            let Some(container) = element_at(self.body(), &b.targets[0]).cloned() else { continue };
+            let mut cx = PatchCtx::new(opts, &self.styles, &mut self.rels, &mut numbering, &[], carry);
+            let res = patch::patch_paras(&container, &paras, o, n, &mut cx);
+            let (c, rels_changed) = cx.finish();
+            carry = c;
+            self.dirty.rels |= rels_changed;
+            if let Some(newc) = res {
+                for t in &b.targets {
+                    if let Some(e) = element_at_mut(self.body_mut(), t) {
+                        *e = newc.clone();
+                    }
+                }
+                self.dirty.dom = true;
+            }
+        }
+        for (id, _) in &new.boxes {
+            if !orig.boxes.iter().any(|x| &x.0 == id) {
+                carry.warnings.push(format!("text box {id} doesn't exist; new text boxes can't be created"));
+            }
+        }
+
+        // 2. New footnotes get their ids before the body references them.
+        let labels: HashSet<String> = self.notes().into_iter().map(|n| n.label).collect();
+        let mut next_note = self.notes[0]
+            .doc
+            .as_ref()
+            .map(|d| d.root.elements().filter_map(|e| e.attr("w:id")?.parse::<i64>().ok()).max().unwrap_or(0))
+            .unwrap_or(0)
+            .max(0)
+            + 1;
+        for (label, _) in &new.notes {
+            if !labels.contains(label) && !orig.notes.iter().any(|(l, _)| l == label) {
+                carry.note_refs.insert(label.clone(), next_note.to_string());
+                next_note += 1;
+            }
+        }
+
+        // 3. The body.
+        let blocks = self.blocks();
+        let map = r0.map.clone();
+        let orig_blocks = &orig.blocks;
+        let new_blocks = &new.blocks;
+        let ok: Vec<String> = orig_blocks.iter().map(|b| b.key()).collect();
+        let nk: Vec<String> = new_blocks.iter().map(|b| b.key()).collect();
+        let ops = align(&ok, &nk, |i, j| block_sim(&orig_blocks[i], &new_blocks[j]));
+        let body_el = self.body().clone();
+        let mut cx = PatchCtx::new(opts, &self.styles, &mut self.rels, &mut numbering, &blocks, carry);
         let mut sp = Splice::default();
         let mut anchor: Option<usize> = None;
         let mut front: Vec<Node> = Vec::new();
@@ -262,7 +356,7 @@ impl Docx {
                 Align::Keep(i, _) => anchor = Some(i),
                 Align::Modify(i, j) => {
                     let bi = map[i];
-                    match (&blocks[bi], &orig[i], &new[j]) {
+                    match (&blocks[bi], &orig_blocks[i], &new_blocks[j]) {
                         (Block::Para(p), mdparse::EBlock::Para(o), mdparse::EBlock::Para(n)) => {
                             if let Some(r) = patch::patch_para(p, o, Some(n), Some(bi), &mut cx) {
                                 sp.replace.insert(p.path[0], r);
@@ -281,7 +375,7 @@ impl Docx {
                 }
                 Align::Delete(i) => {
                     let bi = map[i];
-                    match (&blocks[bi], &orig[i]) {
+                    match (&blocks[bi], &orig_blocks[i]) {
                         (Block::Para(p), mdparse::EBlock::Para(o)) => {
                             if let Some(r) = patch::patch_para(p, o, None, Some(bi), &mut cx) {
                                 sp.replace.insert(p.path[0], r);
@@ -304,7 +398,7 @@ impl Docx {
                 }
                 Align::Insert(j) => {
                     let near = anchor.map(|i| map[i]);
-                    let node = match &new[j] {
+                    let node = match &new_blocks[j] {
                         mdparse::EBlock::Para(e) => patch::new_para(e, near, &mut cx),
                         mdparse::EBlock::Table(rows) => patch::new_table(rows, &mut cx),
                         mdparse::EBlock::Opaque(n) => {
@@ -335,20 +429,54 @@ impl Docx {
                 }
             }
         }
-        let stats = cx.stats;
-        let warnings = std::mem::take(&mut cx.warnings);
-        let new_comments = std::mem::take(&mut cx.new_comments);
-        let media = std::mem::take(&mut cx.media);
-        let rels_changed = cx.rels_changed;
-        let numbering_changed = cx.numbering_changed;
-        drop(cx);
-        self.numbering = numbering;
+        let (mut carry, rels_changed) = cx.finish();
+        self.dirty.rels |= rels_changed;
         if !sp.is_empty() {
             sp.apply(&mut self.body_mut().children);
             self.dirty.dom = true;
         }
-        self.dirty.rels |= rels_changed;
-        self.dirty.numbering |= numbering_changed;
+
+        // 4. Footnote and endnote text.
+        let notes0 = self.notes();
+        for (label, used) in &r0.notes {
+            let (Some((_, o)), Some((_, n))) = (orig.notes.iter().find(|x| &x.0 == label), new.notes.iter().find(|x| &x.0 == label)) else {
+                continue;
+            };
+            let Some(note) = notes0.iter().find(|x| &x.label == label) else { continue };
+            let Some(pi) = self.notes.iter().position(|np| np.find(label).is_some()) else { continue };
+            let k = self.notes[pi].find(label).unwrap();
+            let np = &mut self.notes[pi];
+            let Some(Node::Element(container)) = np.doc.as_ref().unwrap().root.children.get(k).cloned() else { continue };
+            let paras: Vec<model::Para> = used.iter().map(|i| note.paras[*i].clone()).collect();
+            let mut cx = PatchCtx::new(opts, &self.styles, &mut np.rels, &mut numbering, &[], carry);
+            let res = patch::patch_paras(&container, &paras, o, n, &mut cx);
+            let (c, rels_changed) = cx.finish();
+            carry = c;
+            np.rels_dirty |= rels_changed;
+            if let Some(newc) = res {
+                np.doc.as_mut().unwrap().root.children[k] = newc.into();
+                np.dirty = true;
+            }
+        }
+        let used = std::mem::take(&mut carry.used_notes);
+        if !used.is_empty() {
+            self.ensure_footnotes()?;
+            for label in used {
+                let id = carry.note_refs[&label].clone();
+                let paras = new.notes.iter().find(|x| x.0 == label).map(|x| x.1.clone()).unwrap_or_default();
+                let np = &mut self.notes[0];
+                let mut cx = PatchCtx::new(opts, &self.styles, &mut np.rels, &mut numbering, &[], carry);
+                let el = patch::new_footnote(&id, &paras, &mut cx);
+                let (c, rels_changed) = cx.finish();
+                carry = c;
+                np.rels_dirty |= rels_changed;
+                np.doc.as_mut().unwrap().root.children.push(el.into());
+                np.dirty = true;
+            }
+        }
+        self.numbering = numbering;
+        self.dirty.numbering |= carry.numbering_changed;
+        let (stats, warnings, new_comments, media) = (carry.stats, carry.warnings, carry.new_comments, carry.media);
         for (part, data) in media {
             let ext = part.rsplit('.').next().unwrap_or("png").to_lowercase();
             let ct = match ext.as_str() {
@@ -410,9 +538,43 @@ impl Docx {
         Ok(())
     }
 
+    /// The footnotes part, created with Word's separator notes if missing.
+    fn ensure_footnotes(&mut self) -> Result<()> {
+        let np = &mut self.notes[0];
+        if np.doc.is_none() {
+            np.doc = Some(Document::parse(&format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<w:footnotes xmlns:w=\"{}\" xmlns:r=\"{}\"><w:footnote w:type=\"separator\" w:id=\"-1\"><w:p><w:pPr><w:spacing w:after=\"0\" w:line=\"240\" w:lineRule=\"auto\"/></w:pPr><w:r><w:separator/></w:r></w:p></w:footnote><w:footnote w:type=\"continuationSeparator\" w:id=\"0\"><w:p><w:pPr><w:spacing w:after=\"0\" w:line=\"240\" w:lineRule=\"auto\"/></w:pPr><w:r><w:continuationSeparator/></w:r></w:p></w:footnote></w:footnotes>",
+                package::W_NS,
+                package::R_NS
+            ))?);
+        }
+        if !np.existed {
+            let target = np.part.strip_prefix("word/").unwrap_or(&np.part).to_string();
+            self.rels.add(REL_FOOTNOTES, &target, false);
+            self.pkg.ensure_content_type(Some(&np.part.clone()), None, CT_FOOTNOTES)?;
+            np.existed = true;
+            self.dirty.rels = true;
+        }
+        Ok(())
+    }
+
+    /// Tracked changes in the body, then in footnotes and endnotes.
     pub fn changes(&self) -> Vec<Change> {
         let mut v = revisions::list(self.body());
         revisions::annotate(self.body(), &mut v);
+        for (pi, np) in self.notes.iter().enumerate() {
+            let Some(d) = &np.doc else { continue };
+            let mut w = revisions::list(&d.root);
+            revisions::annotate(&d.root, &mut w);
+            for c in &mut w {
+                c.scope = pi + 1;
+                c.part = format!("{}s", np.kind);
+            }
+            v.extend(w);
+        }
+        for (k, c) in v.iter_mut().enumerate() {
+            c.n = k + 1;
+        }
         v
     }
 
@@ -429,9 +591,19 @@ impl Docx {
             .filter(|c| which.is_empty() || which.contains(&c.n))
             .filter(|c| author.is_none_or(|a| c.author == a))
             .collect();
-        let n = revisions::resolve(self.body_mut(), &sel, accept);
-        if n > 0 {
+        let mut n = 0;
+        let body_sel: Vec<Change> = sel.iter().filter(|c| c.scope == 0).cloned().collect();
+        if !body_sel.is_empty() {
+            n += revisions::resolve(self.body_mut(), &body_sel, accept);
+            revisions::sync_fallbacks(self.body_mut());
             self.dirty.dom = true;
+        }
+        for (pi, np) in self.notes.iter_mut().enumerate() {
+            let part_sel: Vec<Change> = sel.iter().filter(|c| c.scope == pi + 1).cloned().collect();
+            if let (false, Some(d)) = (part_sel.is_empty(), &mut np.doc) {
+                n += revisions::resolve(&mut d.root, &part_sel, accept);
+                np.dirty = true;
+            }
         }
         Ok(n)
     }
@@ -514,22 +686,8 @@ impl Docx {
                 let id = self.comments.next_id(&self.dom.root);
                 let opts = Opts { author: author.to_string(), date: date.to_string(), tracked: false, base_dir: None };
                 let mut numbering = None;
-                let mut cx = PatchCtx {
-                    opts: &opts,
-                    styles: &self.styles,
-                    rels: &mut self.rels,
-                    numbering: &mut numbering,
-                    blocks: &[],
-                    next_id: 0,
-                    warnings: Vec::new(),
-                    rels_changed: false,
-                    numbering_changed: false,
-                    stats: Stats::default(),
-                    next_comment_id: id,
-                    new_comments: Vec::new(),
-                    media: Vec::new(),
-                    max_image_emu: 0,
-                };
+                let carry = Carry { next_comment_id: id, ..Default::default() };
+                let mut cx = PatchCtx::new(&opts, &self.styles, &mut self.rels, &mut numbering, &[], carry);
                 let node = patch::comment_on_items(p, si, ei, text, &mut cx);
                 let path = p.path.clone();
                 self.replace_para(&path, node);
@@ -630,7 +788,7 @@ impl Docx {
 
     pub fn is_dirty(&self) -> bool {
         let d = &self.dirty;
-        d.dom || d.rels || d.comments || d.numbering
+        d.dom || d.rels || d.comments || d.numbering || self.notes.iter().any(|n| n.dirty || n.rels_dirty)
     }
 
     /// Serialize, writing only the parts that changed.
@@ -651,6 +809,18 @@ impl Docx {
         }
         if self.dirty.comments {
             self.comments.save(&mut self.pkg);
+        }
+        for np in &mut self.notes {
+            if np.dirty {
+                if let Some(d) = &np.doc {
+                    self.pkg.write_xml(&np.part, d);
+                }
+                np.dirty = false;
+            }
+            if np.rels_dirty {
+                np.rels.save(&mut self.pkg);
+                np.rels_dirty = false;
+            }
         }
         if self.dirty.rels {
             self.rels.save(&mut self.pkg);
@@ -678,6 +848,22 @@ impl Docx {
         d.dirty.dom = true;
         Ok((d, report))
     }
+}
+
+fn element_at<'a>(root: &'a Element, path: &[usize]) -> Option<&'a Element> {
+    let mut cur = root;
+    for i in path {
+        cur = cur.children.get(*i)?.as_element()?;
+    }
+    Some(cur)
+}
+
+fn element_at_mut<'a>(root: &'a mut Element, path: &[usize]) -> Option<&'a mut Element> {
+    let mut cur = root;
+    for i in path {
+        cur = cur.children.get_mut(*i)?.as_element_mut()?;
+    }
+    Some(cur)
 }
 
 fn insert_after_match(e: &mut Element, pred: &dyn Fn(&Element) -> bool, node: Node) -> bool {

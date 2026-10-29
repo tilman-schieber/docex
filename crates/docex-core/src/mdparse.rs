@@ -225,7 +225,12 @@ struct P {
     heading: Option<u8>,
     code: Option<(String, String)>,
     html: Option<String>,
-    footnote: u32,
+    /// Footnote definitions: label -> paragraphs.
+    notes: Vec<(String, Vec<EPara>)>,
+    in_note: bool,
+    /// Text box sections: id -> paragraphs.
+    boxes: Vec<(String, Vec<EPara>)>,
+    in_box: bool,
     table: Option<Vec<Vec<Vec<EPara>>>>,
     row: Option<Vec<Vec<EPara>>>,
     cell: Option<Vec<EPara>>,
@@ -251,9 +256,6 @@ impl P {
     }
 
     fn target(&mut self) -> Option<&mut EPara> {
-        if self.footnote > 0 {
-            return None;
-        }
         if self.cell.is_some() {
             let cell = self.cell.as_mut().unwrap();
             if cell.is_empty() {
@@ -270,7 +272,32 @@ impl P {
 
     fn close_para(&mut self) {
         if let Some(mut p) = self.para.take() {
+            if p.kind == Kind::Caption && p.atoms.first().is_some_and(|a| a.key == ":") {
+                p.atoms.remove(0);
+                for c in &mut p.comments {
+                    c.start = c.start.saturating_sub(1);
+                    c.end = c.end.saturating_sub(1);
+                }
+            }
             trim(&mut p);
+            if self.in_box {
+                p.kind = Kind::Normal;
+                if let Some((_, paras)) = self.boxes.last_mut() {
+                    if !p.atoms.is_empty() || !p.comments.is_empty() {
+                        paras.push(p);
+                    }
+                }
+                return;
+            }
+            if self.in_note {
+                p.kind = Kind::Normal;
+                if let Some((_, paras)) = self.notes.last_mut() {
+                    if !p.atoms.is_empty() || !p.comments.is_empty() {
+                        paras.push(p);
+                    }
+                }
+                return;
+            }
             if !p.atoms.is_empty() || !p.comments.is_empty() {
                 self.blocks.push(EBlock::Para(p));
             }
@@ -387,7 +414,18 @@ fn opaque_id(s: &str, prefix: &str) -> Option<usize> {
     digits.parse().ok()
 }
 
+/// Blocks plus footnote definitions (`[^label]: text`).
+pub struct Parsed {
+    pub blocks: Vec<EBlock>,
+    pub notes: Vec<(String, Vec<EPara>)>,
+    pub boxes: Vec<(String, Vec<EPara>)>,
+}
+
 pub fn parse(src: &str) -> Vec<EBlock> {
+    parse_full(src).blocks
+}
+
+pub fn parse_full(src: &str) -> Parsed {
     let pre = critic_prepass(src);
     let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_FOOTNOTES;
     let mut p = P {
@@ -399,12 +437,15 @@ pub fn parse(src: &str) -> Vec<EBlock> {
         heading: None,
         code: None,
         html: None,
-        footnote: 0,
+        notes: Vec::new(),
+        in_note: false,
+        boxes: Vec::new(),
+        in_box: false,
         table: None,
         row: None,
         cell: None,
     };
-    for ev in Parser::new_ext(&pre, opts) {
+    for (ev, range) in Parser::new_ext(&pre, opts).into_offset_iter() {
         if let Some((_, buf)) = &mut p.code {
             match ev {
                 Event::Text(t) => buf.push_str(&t),
@@ -451,7 +492,19 @@ pub fn parse(src: &str) -> Vec<EBlock> {
                 Event::Html(t) | Event::Text(t) => buf.push_str(&t),
                 Event::End(TagEnd::HtmlBlock) => {
                     let buf = p.html.take().unwrap();
-                    if let Some(n) = opaque_id(&buf, "docex:opaque b") {
+                    if buf.contains(crate::render::BOX_END) {
+                        p.close_para();
+                        p.in_box = false;
+                    } else if let Some(i) = buf.find(crate::render::BOX_START) {
+                        p.close_para();
+                        let id: String = buf[i + crate::render::BOX_START.len()..]
+                            .trim_start()
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric())
+                            .collect();
+                        p.boxes.push((id, Vec::new()));
+                        p.in_box = true;
+                    } else if let Some(n) = opaque_id(&buf, "docex:opaque b") {
                         p.blocks.push(EBlock::Opaque(n));
                     } else if buf.contains("<!--docex:") {
                         // A paragraph that merely starts with an inline object
@@ -481,6 +534,10 @@ pub fn parse(src: &str) -> Vec<EBlock> {
                 Tag::Paragraph => {
                     if p.cell.is_none() {
                         p.close_para();
+                        // `: text` is a caption (an escaped `\:` is not).
+                        if !p.in_note && !p.in_box && p.context_kind() == Kind::Normal && pre[range.start..].starts_with(": ") {
+                            p.para = Some(new_para(Kind::Caption));
+                        }
                     }
                 }
                 Tag::Heading { level, .. } => {
@@ -508,9 +565,10 @@ pub fn parse(src: &str) -> Vec<EBlock> {
                     p.lists.push(start.is_some());
                 }
                 Tag::Item => p.close_para(),
-                Tag::FootnoteDefinition(_) => {
+                Tag::FootnoteDefinition(label) => {
                     p.close_para();
-                    p.footnote += 1;
+                    p.notes.push((label.to_string(), Vec::new()));
+                    p.in_note = true;
                 }
                 Tag::Table(_) => {
                     p.close_para();
@@ -545,8 +603,8 @@ pub fn parse(src: &str) -> Vec<EBlock> {
                 }
                 TagEnd::Item => p.close_para(),
                 TagEnd::FootnoteDefinition => {
-                    p.para = None;
-                    p.footnote = p.footnote.saturating_sub(1);
+                    p.close_para();
+                    p.in_note = false;
                 }
                 TagEnd::TableCell => {
                     let mut cell = p.cell.take().unwrap_or_default();
@@ -612,7 +670,7 @@ pub fn parse(src: &str) -> Vec<EBlock> {
         }
     }
     p.close_para();
-    p.blocks
+    Parsed { blocks: p.blocks, notes: p.notes, boxes: p.boxes }
 }
 
 #[cfg(test)]

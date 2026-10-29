@@ -39,12 +39,18 @@ Files are changed in place with a `FILE.docx~` backup. Use `-o OUT.docx` to writ
 | Simple tables | pipe tables (`<br>` separates paragraphs in a cell) |
 | Tables with merged cells | read-only `docex-table` block |
 | Images | `![alt](media/image1.png)` (`cat --media DIR` extracts them) |
-| Footnotes | `[^1]` plus the note text at the end (read-only) |
+| Captions (figures, tables) | `: Figure 1: text` |
+| Footnotes, endnotes | `[^1]` with `[^1]: text` at the end (endnotes `[^e1]`) |
+| Text boxes | `<!-- docex:textbox tb1 -->` … paragraphs … `<!-- /docex:textbox -->` after the paragraph they're anchored in |
 | Tracked insertion / deletion | `{++new++}` / `{--old--}` |
 | Comment | `{==anchored text==}{>>Author: comment<<}` |
-| TOC, content controls, text boxes, equations, page breaks | `<!-- docex:… -->` placeholders, kept as-is |
+| TOC, content controls, shapes, equations, page breaks | `<!-- docex:… -->` placeholders, kept as-is |
 
 You can write CriticMarkup yourself: `{++text++}`, `{--text--}` and `{~~old~>new~~}` are always recorded as tracked changes, even with tracking off. A new `{==text==}{>>remark<<}` (or a bare `{>>remark<<}`) becomes a Word comment. New images referenced by path (PNG, JPEG, GIF) are embedded and sized to the page width.
+
+Footnote text, text box text and captions are edited like any other paragraph, with tracked changes. A new `[^any-label]` reference plus its `[^any-label]: text` definition creates a Word footnote, which Word numbers itself. A new `: Figure 3: text` caption gets a real auto-numbering field (`SEQ Figure`), so Word renumbers it. Tracked changes in footnotes show up in `docex changes` like any other; edits inside a text box are written to both copies Word keeps of it.
+
+Tables are deliberately kept simple: you can edit cell text and add or remove rows. Column changes and tables with merged cells (shown read-only) are left to Word, or to the planned GUI.
 
 Things deliberately left out: spacing, fonts, colours, page layout. New text takes on the formatting of the text around it, and new paragraphs copy the nearest paragraph of the same kind, so additions look native in Word.
 
