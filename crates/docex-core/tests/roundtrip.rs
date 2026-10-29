@@ -300,3 +300,44 @@ fn captions() {
     assert_eq!(xml.matches(r#"<w:pStyle w:val="Caption"/>"#).count(), 2);
     assert!(d.render(View::Review).contains(": Figure 2: A dog."));
 }
+
+#[test]
+fn model_roundtrip_is_noop_and_edits_track() {
+    use docex_core::docmodel::{DocModel, MBlock};
+    for mut d in [docx(WORDY), docx(BOXED), fixture("rich.docx")] {
+        let before = d.dom.to_xml();
+        let m = d.model();
+        // Through JSON, as the GUI does.
+        let m: DocModel = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        let r = d.apply_model(&m, &opts(true)).unwrap();
+        assert!(!r.changed(), "{r:?}");
+        assert_eq!(d.dom.to_xml(), before);
+    }
+    let mut d = docx(WORDY);
+    let mut m = d.model();
+    // Alice's change carries author and Word id.
+    let MBlock::Para(p) = &m.blocks[1] else { panic!() };
+    let ins = p.spans.iter().find(|s| s.t == "600").unwrap();
+    assert_eq!((ins.author.as_deref(), ins.wid.as_deref()), (Some("Alice"), Some("2")));
+    // Edit: append text as a typed (tracked) insertion, delete "Second ".
+    let MBlock::Para(p) = &mut m.blocks[2] else { panic!() };
+    p.spans[0].t = "clause stays.".into();
+    p.spans.push(docex_core::docmodel::Span { t: " New.".into(), st: docex_core::model::Status::Ins, ..Default::default() });
+    let r = d.apply_model(&m, &opts(true)).unwrap();
+    assert!(r.changed());
+    let md = d.render(View::Review);
+    assert!(md.contains("{--Second --}clause stays.{++ New.++}"), "{md}");
+    // Accept Alice's insertion by its Word id.
+    assert_eq!(d.resolve_wids(&["2".into()], true).unwrap(), 1);
+    assert!(d.render(View::Review).contains("pays {--500--}600 euros"));
+}
+
+#[test]
+fn model_noop_on_rich_fixture_spans() {
+    let d = fixture("rich.docx");
+    let m = d.model();
+    let j = serde_json::to_string(&m).unwrap();
+    assert!(j.contains(r#""obj":"img:media/rId10.png""#), "{j}");
+    assert!(j.contains(r#""obj":"fn:13""#));
+    assert!(j.contains(r#""label":"13""#));
+}

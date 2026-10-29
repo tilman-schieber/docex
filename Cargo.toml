@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/docex-core", "crates/docex-cli"]
+members = ["crates/docex-core", "crates/docex-cli", "gui/src-tauri"]
 
 [workspace.package]
 edition = "2021"

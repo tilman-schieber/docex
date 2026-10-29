@@ -54,6 +54,23 @@ Tables are deliberately kept simple: you can edit cell text and add or remove ro
 
 Things deliberately left out: spacing, fonts, colours, page layout. New text takes on the formatting of the text around it, and new paragraphs copy the nearest paragraph of the same kind, so additions look native in Word.
 
+## GUI
+
+`gui/` is a desktop editor on the same core (Tauri + ProseMirror). It shows the document formatted:
+- tracked changes in color, with Accept/Reject on each one and in the sidebar
+- comments, which you can add, reply to, resolve or delete
+- tables (add and remove rows), images, footnotes, text boxes and captions
+
+With Track Changes on (the switch in the status bar, stored in the document like Word's), your typing shows up as insertions and deleted text gets struck through. On save, the core records the real tracked changes against the original file. As with the CLI, everything you didn't touch stays byte-for-byte.
+
+```sh
+cd gui
+npm install
+npx tauri dev -- -- path/to/file.docx   # run from source
+npx tauri build --no-bundle             # binary: target/release/docex-gui
+npm test                                # GUI conversion + live tracking against the core
+```
+
 ## Building
 
 ```sh

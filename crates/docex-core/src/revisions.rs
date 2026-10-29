@@ -29,6 +29,8 @@ pub struct Change {
     pub text: String,
     /// Where the change is: "body", "footnotes" or "endnotes".
     pub part: String,
+    /// Word ids (`w:id`) of the elements making up the change.
+    pub wids: Vec<String>,
     #[serde(skip)]
     pub scope: usize,
     /// The XML elements making up this change (a paragraph's text and its
@@ -142,6 +144,7 @@ pub fn list(root: &Element) -> Vec<Change> {
                     last.text.push_str(&ch.text);
                 }
                 last.parts.extend(ch.parts);
+                last.wids.extend(ch.wids);
                 continue;
             }
         }
@@ -167,6 +170,7 @@ fn collect(e: &Element, path: &mut Vec<usize>, names: &mut Vec<String>, out: &mu
             out.push(Change {
                 n: 0,
                 part: "body".into(),
+                wids: c.attr("w:id").map(|w| vec![w.to_string()]).unwrap_or_default(),
                 scope: 0,
                 kind,
                 author: c.attr("w:author").unwrap_or("").to_string(),

@@ -2,6 +2,7 @@
 //! changes, comments) through Markdown, without disturbing the rest.
 
 pub mod comments;
+pub mod docmodel;
 pub mod mdparse;
 pub mod model;
 pub mod package;
@@ -275,6 +276,25 @@ impl Docx {
 
     /// Apply an edited Markdown version of this document.
     pub fn apply(&mut self, edited: &str, opts: &Opts) -> Result<Report> {
+        self.apply_parsed(mdparse::parse_full(edited), opts)
+    }
+
+    /// The document as a JSON-able model for graphical editors.
+    pub fn model(&self) -> docmodel::DocModel {
+        let (blocks, notes, boxes) = (self.blocks(), self.notes(), self.text_boxes());
+        let r = render::render(&blocks, &self.render_ctx(View::Review, &notes, &boxes));
+        let parsed = mdparse::parse_full(&r.md);
+        let known: HashSet<String> = self.comments.list.iter().map(|c| c.id.clone()).collect();
+        docmodel::export(&blocks, &r, &parsed, &notes, &boxes, &known)
+    }
+
+    /// Apply an edited model (see [`Docx::model`]).
+    pub fn apply_model(&mut self, m: &docmodel::DocModel, opts: &Opts) -> Result<Report> {
+        self.apply_parsed(docmodel::import(m), opts)
+    }
+
+    /// Apply edited content given as parsed blocks.
+    pub fn apply_parsed(&mut self, new: mdparse::Parsed, opts: &Opts) -> Result<Report> {
         let r0 = self.render_full(View::Review);
         let orig = mdparse::parse_full(&r0.md);
         if orig.blocks.len() != r0.map.len() {
@@ -284,7 +304,6 @@ impl Docx {
                 r0.map.len()
             );
         }
-        let new = mdparse::parse_full(edited);
         let mut carry = Carry {
             next_id: self.max_change_id(),
             next_comment_id: self.comments.next_id(&self.dom.root),
@@ -576,6 +595,15 @@ impl Docx {
             c.n = k + 1;
         }
         v
+    }
+
+    /// Accept or reject the changes containing any of these Word change ids.
+    pub fn resolve_wids(&mut self, wids: &[String], accept: bool) -> Result<usize> {
+        let ns: Vec<usize> = self.changes().iter().filter(|c| c.wids.iter().any(|w| wids.contains(w))).map(|c| c.n).collect();
+        if ns.is_empty() {
+            return Ok(0);
+        }
+        self.resolve_changes(&ns, None, accept)
     }
 
     /// Accept or reject changes. `which` empty = all; `author` filters.

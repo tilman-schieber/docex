@@ -418,7 +418,7 @@ fn atom_ops(orig: &[EAtom], new: &[EAtom]) -> Vec<AOp> {
 }
 
 /// Map rendered-and-reparsed atoms back to projection items.
-fn map_atoms(p: &Para, orig: &[EAtom]) -> Vec<Option<usize>> {
+pub fn map_atoms(p: &Para, orig: &[EAtom]) -> Vec<Option<usize>> {
     let vis: Vec<usize> = p.visible().map(|(i, _)| i).collect();
     let vk: Vec<String> = vis.iter().map(|i| p.items[*i].key().unwrap()).collect();
     let ok: Vec<&str> = orig.iter().map(|a| a.key.as_str()).collect();

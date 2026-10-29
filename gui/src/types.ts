@@ -1,0 +1,83 @@
+// Mirrors docex_core::docmodel and the view returned by the Tauri backend.
+
+export interface Span {
+  t?: string;
+  obj?: string;
+  alt?: string;
+  b?: boolean;
+  i?: boolean;
+  s?: boolean;
+  c?: boolean;
+  link?: string;
+  st?: "ins" | "del";
+  author?: string;
+  date?: string;
+  wid?: string;
+  comments?: string[];
+}
+
+export interface NewComment {
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface MPara {
+  kind: string;
+  level: number;
+  spans: Span[];
+  new_comments?: NewComment[];
+}
+
+export type MBlock =
+  | ({ type: "para" } & MPara)
+  | { type: "table"; rows: MPara[][][] }
+  | { type: "opaque"; id: number; label: string; preview: string };
+
+export interface MBox {
+  id: string;
+  after: number | null;
+  paras: MPara[];
+}
+
+export interface MNote {
+  label: string;
+  paras: MPara[];
+}
+
+export interface DocModel {
+  blocks: MBlock[];
+  boxes: MBox[];
+  notes: MNote[];
+}
+
+export interface Change {
+  n: number;
+  kind: string;
+  author: string;
+  date: string;
+  text: string;
+  part: string;
+  wids: string[];
+}
+
+export interface Comment {
+  id: string;
+  author: string;
+  date: string;
+  text: string;
+  parent?: string;
+  done: boolean;
+  anchor: string;
+}
+
+export interface View {
+  model: DocModel;
+  changes: Change[];
+  comments: Comment[];
+  track: boolean;
+  images: Record<string, string>;
+  path: string | null;
+  dirty: boolean;
+  warnings: string[];
+}
