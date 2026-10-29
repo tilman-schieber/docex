@@ -74,6 +74,13 @@ function ago(d: string): string {
   return new Date(t).toLocaleDateString(undefined, { day: "numeric", month: "short", year: s > 86400 * 300 ? "numeric" : undefined });
 }
 
+/** Whitespace, or punctuation without surrounding text, is hard to see: name it or quote it. */
+export function visible(t: string, inContext = false): string {
+  if (!t || /[\p{L}\p{N}]/u.test(t)) return t;
+  if (!t.trim()) return t.includes("\n") ? "¶" : t.length === 1 ? "space" : `${t.length} spaces`;
+  return inContext ? t : `“${t.trim()}”`;
+}
+
 function plural(n: number, one: string, many = one + "s") {
   return `${n} ${n === 1 ? one : many}`;
 }
@@ -96,6 +103,11 @@ export function createCockpit(app: App) {
   };
   let active: string | null = null;
   let expanded: string | null = null;
+  /** Move the caret into the expanded thread's reply box (only when opened from the list). */
+  let focusReply = false;
+  /** Thread whose delete button was clicked once and waits for confirmation. */
+  let confirmDelete: string | null = null;
+  let hlTimer: number | undefined;
   const collapsed = new Set<string>(JSON.parse(localStorage.getItem("docex-collapsed") || "[]"));
   let headingTops: number[] = [];
   let currentSection = 0;
@@ -139,19 +151,22 @@ export function createCockpit(app: App) {
     setHighlight(view, ranges.length ? ranges : null);
   }
 
-  function focusItem(it: Item, scroll = true) {
+  /** `hold` keeps the highlight until the next one; `inset` is page height covered at the top (triage). */
+  function focusItem(it: Item, scroll = true, opts: { hold?: boolean; inset?: number } = {}) {
     active = it.key;
     document.querySelectorAll(".item.active").forEach((e) => e.classList.remove("active"));
     const row = document.querySelector(`.item[data-key="${CSS.escape(it.key)}"]`);
     row?.classList.add("active");
     row?.scrollIntoView({ block: "nearest" });
     if (it.from !== null && scroll) {
-      wrap.scrollTo({ top: absTop(it.from) - wrap.clientHeight / 3 });
+      const inset = opts.inset ?? 0;
+      wrap.scrollTo({ top: absTop(it.from) - inset - (wrap.clientHeight - inset) / 3 });
       const tr = view.state.tr.setSelection(TextSelection.create(view.state.doc, it.from));
       view.dispatch(tr.setMeta("addToHistory", false));
     }
     highlight(it, true);
-    setTimeout(() => highlight(it, false), 1400);
+    clearTimeout(hlTimer);
+    if (!opts.hold) hlTimer = window.setTimeout(() => highlight(it, false), 1400);
   }
 
   function step(d: number) {
@@ -350,10 +365,11 @@ export function createCockpit(app: App) {
 
   function changeLine(it: Item) {
     const line = h("div", { class: "line" });
+    const ctx = !!(it.before || it.after);
     if (it.before) line.append(h("span", { class: "ctx" }, it.before));
-    if (it.old) line.append(h("del", {}, it.old));
+    if (it.old) line.append(h("del", {}, visible(it.old, ctx)));
     if (it.kind === "replace") line.append(h("span", { class: "arrow" }, "→"));
-    if (it.new) line.append(h("ins", {}, it.new));
+    if (it.new) line.append(h("ins", {}, visible(it.new, ctx)));
     if (!it.old && !it.new) line.append(h("span", { class: "plain" }, it.text || it.label || "change"));
     if (it.after) line.append(h("span", { class: "ctx" }, it.after));
     return line;
@@ -368,7 +384,10 @@ export function createCockpit(app: App) {
       onmouseenter: () => highlight(it, true),
       onmouseleave: () => highlight(it, false),
       onclick: () => {
-        if (it.kind === "comment") expanded = expanded === it.key ? null : it.key;
+        if (it.kind === "comment") {
+          expanded = expanded === it.key ? null : it.key;
+          focusReply = true;
+        }
         focusItem(it);
         if (it.kind === "comment") renderReview();
       },
@@ -384,7 +403,30 @@ export function createCockpit(app: App) {
       const c = it.comment!;
       acts.append(
         act(c.done ? Undo2 : Check, c.done ? "Reopen" : "Resolve", () => app.call("comment_done", { id: c.id, done: !c.done }), "ok"),
-        act(Trash2, "Delete thread", () => app.call("comment_delete", { id: c.id }), "no"),
+        confirmDelete === c.id
+          ? h(
+              "button",
+              {
+                class: "act no confirm",
+                "data-tip": "Delete this thread and its replies",
+                onclick: (e: Event) => {
+                  e.stopPropagation();
+                  confirmDelete = null;
+                  void app.call("comment_delete", { id: c.id });
+                },
+              },
+              icon(Trash2),
+              "Delete?",
+            )
+          : act(Trash2, "Delete thread", () => {
+              confirmDelete = c.id;
+              renderFeed();
+              setTimeout(() => {
+                if (confirmDelete !== c.id) return;
+                confirmDelete = null;
+                renderFeed();
+              }, 3000);
+            }, "no"),
       );
       const body = h(
         "div",
@@ -439,7 +481,8 @@ export function createCockpit(app: App) {
           "Draft",
         ) as HTMLButtonElement;
         body.append(h("div", { class: "reply-box" }, ta, h("div", { class: "reply-btns" }, sendBtn, draftBtn)));
-        setTimeout(() => ta.focus(), 0);
+        if (focusReply) setTimeout(() => ta.focus(), 0);
+        focusReply = false;
       }
       row.append(avatar(it.author), body, acts);
     } else {
@@ -582,16 +625,22 @@ export function createCockpit(app: App) {
       if (c) scope.push(`"${c.old}" → "${c.new}"`);
     }
     const changeItems = list.filter((i) => i.kind !== "comment");
+    const filtered = scope.length > 0 || !!filter.q || filter.show !== "all" || filter.hideNoise;
+    // Unfiltered, the count is already on the "All" tab.
+    const scopeRow = filtered
+      ? h(
+          "div",
+          { class: "scope-row" },
+          h("span", { class: "scope", title: scope.join(" · ") }, scope.length ? `Showing ${list.length} · ${scope.join(" · ")}` : `Showing ${list.length}`),
+          h("button", { class: "clear", "data-tip": "Show everything again", onclick: () => { filter.people.clear(); filter.section = null; filter.q = ""; filter.show = "all"; filter.cluster = null; filter.hideNoise = false; renderAll(); } }, "clear"),
+        )
+      : null;
     const bulk = h(
       "div",
       { class: "bulk" },
-      h("span", { class: "scope" }, scope.length ? `Showing ${list.length} · ${scope.join(" · ")}` : `Showing ${list.length}`),
-      scope.length || filter.q || filter.show !== "all" || filter.hideNoise
-        ? h("button", { class: "clear", "data-tip": "Show everything again", onclick: () => { filter.people.clear(); filter.section = null; filter.q = ""; filter.show = "all"; filter.cluster = null; filter.hideNoise = false; renderAll(); } }, "clear")
-        : null,
       h("span", { class: "grow" }),
       list.length
-        ? h("button", { class: "ghost", "data-tip": "Go through these one by one with single keys  T", onclick: () => startTriage() }, icon(ListChecks), "Triage")
+        ? h("button", { class: "ghost", "data-tip": "Go through these one by one with single keys  Alt+T", onclick: () => startTriage() }, icon(ListChecks), "Triage")
         : null,
       list.length ? h("button", { class: "ghost", "data-tip": "AI summary of what's shown", onclick: () => app.summarize(list, scopeLabel()) }, icon(Sparkles)) : null,
       changeItems.length
@@ -603,7 +652,7 @@ export function createCockpit(app: App) {
     );
     const feed = h("div", { class: "feed", id: "feed" });
     el.replaceChildren(
-      h("div", { class: "review-head" }, summary, extras.childNodes.length ? extras : "", people, filters, bulk),
+      h("div", { class: "review-head" }, summary, extras.childNodes.length ? extras : "", people, filters, scopeRow, bulk),
       feed,
       h("div", { class: "keys muted" }, "Alt+↑↓ next/prev · Alt+A accept · Alt+R reject"),
     );
@@ -629,7 +678,7 @@ export function createCockpit(app: App) {
           h(
             "div",
             { class: "body" },
-            h("div", { class: "line" }, c.old ? h("del", {}, c.old) : null, c.old && c.new ? h("span", { class: "arrow" }, "→") : null, c.new ? h("ins", {}, c.new) : null),
+            h("div", { class: "line" }, c.old ? h("del", {}, visible(c.old)) : null, c.old && c.new ? h("span", { class: "arrow" }, "→") : null, c.new ? h("ins", {}, visible(c.new)) : null),
             h("div", { class: "meta" }, c.authors.join(", ")),
           ),
           h(
@@ -857,10 +906,12 @@ export function createCockpit(app: App) {
     resolve,
     rerender: () => renderReview(),
     refreshSoon,
+    /** Open a thread in the list without taking the caret out of the document. */
     focusComment(id: string) {
       const it = index.items.find((i) => i.comment?.id === id);
       if (it) {
         expanded = it.key;
+        focusReply = false;
         renderReview();
         focusItem(it, false);
       }
@@ -869,6 +920,8 @@ export function createCockpit(app: App) {
       const it = index.items.find((i) => i.wids.includes(wid));
       if (it) focusItem(it, false);
     },
+    itemByWid: (wid: string) => index.items.find((i) => i.wids.includes(wid)) ?? null,
+    changeLine,
     onSectionChange(fn: (title: string) => void) {
       onSection = fn;
     },

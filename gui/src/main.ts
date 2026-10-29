@@ -39,7 +39,7 @@ import {
   Undo2,
 } from "lucide";
 import { initTheme } from "./theme";
-import { highlightPlugin } from "./highlight";
+import { highlightPlugin, setHighlight } from "./highlight";
 import { markdownBackspace, markdownRules, pasteMarkdown } from "./markdown";
 import { aiSettingsDialog, askDocument, draftReply, REWRITES, rewriteSelection, summarizeReview, type AIHost } from "./ai";
 import { openPalette, type Entry } from "./palette";
@@ -348,7 +348,7 @@ function toggleSince(on = !sinceOn) {
 function sinceChip(): HTMLElement | null {
   if (!sinceBase || !sinceRes) return null;
   const { changed, added, removed } = sinceRes;
-  const other = current?.path && sinceBase.path !== current.path ? ` (${sinceBase.name})` : "";
+  const other = current?.path && sinceBase.path !== current.path && sinceBase.name !== basename(current.path) ? ` (${sinceBase.name})` : "";
   const n = changed + added + removed;
   const b = h("button", { class: `tag since${sinceOn ? " on" : ""}`, onclick: () => toggleSince() }, n ? `since ${ago(sinceBase.taken)}${other}: ${[changed && `${changed} changed`, added && `${added} new`, removed && `${removed} removed`].filter(Boolean).join(", ")}` : `unchanged since ${ago(sinceBase.taken)}${other}`);
   b.dataset.tip = "What differs from the version you last opened or saved, tracked or not (click: highlight)";
@@ -375,12 +375,13 @@ const cockpit = createCockpit({
   tracking: () => tracking,
   triage: (items, scope) =>
     openTriage(items, scope, {
-      show: (it) => cockpit.focus(it, true),
+      show: (it, inset) => cockpit.focus(it, true, { hold: true, inset }),
       apply: (accept, reject, done) => call("resolve_batch", { accept, reject, done_comments: done }),
       reply: (it, text) => (it.comment ? call("comment_reply", { id: it.comment.id, text }) : commentOn(it, text)),
       ask: (title) => askText(title, "", true),
       section: (it) => cockpit.index().sections[it.section]?.title ?? "",
       done: () => {
+        setHighlight(view, null);
         view.focus();
         cockpit.refreshNow();
       },
@@ -569,20 +570,28 @@ function hidePopover() {
 function showChangePopover(el: HTMLElement) {
   const pop = $("#popover");
   const wid = el.dataset.wid!;
+  // The review item covers both halves of a replacement, like the list does.
+  const it = cockpit.itemByWid(wid);
   const ch = current?.changes.find((c) => c.wids.includes(wid));
+  const decide = (yes: boolean) => {
+    hidePopover();
+    void (it ? cockpit.resolve([it], yes) : accept(ch ? ch.wids : [wid], yes));
+  };
+  const btn = (label: string, cls: string, yes: boolean) => {
+    const b = h("button", { class: cls, textContent: label, onclick: () => decide(yes) });
+    b.dataset.tip = `${label}  Alt+${label[0]}`;
+    return b;
+  };
   pop.replaceChildren(
-    h("div", { class: "pop-title" }, el.title),
-    h(
-      "div",
-      { class: "row" },
-      h("button", { textContent: "Accept", onclick: () => { hidePopover(); void accept(ch ? ch.wids : [wid], true); } }),
-      h("button", { textContent: "Reject", onclick: () => { hidePopover(); void accept(ch ? ch.wids : [wid], false); } }),
-    ),
+    h("div", { class: "pop-title" }, it ? `${it.author} · ${it.label ?? ({ insert: "inserted", delete: "deleted", replace: "replaced" } as Record<string, string>)[it.kind] ?? "changed"} · ${shortDate(it.date)}` : el.title),
+    it && it.kind === "replace" ? cockpit.changeLine({ ...it, before: "", after: "" }) : "",
+    h("div", { class: "row" }, btn("Accept", "ok", true), btn("Reject", "no", false)),
   );
   const r = el.getBoundingClientRect();
-  pop.style.left = `${Math.max(8, r.left)}px`;
-  pop.style.top = `${r.bottom + 6}px`;
+  pop.style.left = "0px";
   pop.hidden = false;
+  pop.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - pop.offsetWidth - 8))}px`;
+  pop.style.top = `${r.bottom + 6}px`;
 }
 
 function renderStatus() {

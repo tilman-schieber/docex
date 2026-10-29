@@ -3,13 +3,14 @@
 // in one call at the end.
 
 import type { Item } from "./analyze";
+import { visible } from "./cockpit";
 import { authorColor, initials } from "./theme";
 
 type Decision = "accept" | "reject" | "skip" | "resolve";
 
 export interface TriageHost {
-  /** Scroll the document to the item (in the background). */
-  show(it: Item): void;
+  /** Scroll the document to the item and highlight it; `inset` px at the top are covered by the triage panel. */
+  show(it: Item, inset: number): void;
   /** Apply all decisions at once. */
   apply(accept: string[], reject: string[], resolveComments: string[]): Promise<unknown>;
   reply(it: Item, text: string): Promise<unknown>;
@@ -116,9 +117,10 @@ export function openTriage(items: Item[], scope: string, host: TriageHost) {
     } else {
       const line = h("div", "tr-text");
       if (it.before) line.append(h("span", "ctx", it.before));
-      if (it.old) line.append(h("del", "", it.old));
+      const ctx = !!(it.before || it.after);
+      if (it.old) line.append(h("del", "", visible(it.old, ctx)));
       if (it.kind === "replace") line.append(h("span", "arrow", " → "));
-      if (it.new) line.append(h("ins", "", it.new));
+      if (it.new) line.append(h("ins", "", visible(it.new, ctx)));
       if (!it.old && !it.new) line.append(h("span", "plain", it.text || it.label || "change"));
       if (it.after) line.append(h("span", "ctx", it.after));
       body.append(line);
@@ -160,10 +162,7 @@ export function openTriage(items: Item[], scope: string, host: TriageHost) {
       const back = h("button", "ghost", "Back (←)");
       back.addEventListener("click", prev);
       main.append(h("div", "row", back, go));
-    } else {
-      main = card(it);
-      host.show(it);
-    }
+    } else main = card(it);
     const keys = h(
       "div",
       "tr-keys",
@@ -174,6 +173,8 @@ export function openTriage(items: Item[], scope: string, host: TriageHost) {
     );
     root.replaceChildren(top, bar, main, summary ? "" : keys);
     root.focus();
+    // The panel covers the top of the page; the item shows in the text below it.
+    if (!summary) host.show(it, root.offsetHeight);
   }
 
   function onKey(e: KeyboardEvent) {
