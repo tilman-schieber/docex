@@ -61,7 +61,16 @@ Things deliberately left out: spacing, fonts, colours, page layout. New text tak
 - comments, which you can add, reply to, resolve or delete
 - tables (add and remove rows), images, footnotes, text boxes and captions
 
-With Track Changes on (the switch in the status bar, stored in the document like Word's), your typing shows up as insertions and deleted text gets struck through. On save, the core records the real tracked changes against the original file. As with the CLI, everything you didn't touch stays byte-for-byte.
+It's built for reviewing, not just editing:
+- **Outline:** the heading tree with per-section counts of changes and comments, plus an activity bar colored by author. It follows where you are and collapses; click to jump.
+- **Review feed:** changes and comment threads grouped by section, each with a few words of context. A deletion followed by an insertion reads as one `old → new` replacement. Comments expand inline to reply or resolve.
+- **People:** a one-line summary ("143 changes by 7 · 15 threads (15 open) by 4") and a chip per person. Hover a chip for their breakdown; click to filter to them (shift+click adds people). Their edits stay highlighted in the text and everyone else's fade.
+- **Bulk actions follow the filter:** accept or reject everything shown, by one person or in one section, at once.
+- **Activity rail:** a minimap beside the page marks every change (in its author's color) and comment; click to jump.
+- **Keys:** Alt+↑/↓ next/previous item, Alt+A accept, Alt+R reject, Ctrl+1/Ctrl+2 toggle the panels.
+- **Omarchy:** the app follows the active theme's palette and monospace font, and recolors live on `omarchy theme set`.
+
+With Track Changes on (the switch in the toolbar, stored in the document like Word's), your typing shows up as insertions and deleted text gets struck through. On save, the core records the real tracked changes against the original file. As with the CLI, everything you didn't touch stays byte-for-byte.
 
 ```sh
 cd gui

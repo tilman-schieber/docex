@@ -141,12 +141,12 @@ export const schema = new Schema({
     ins: {
       attrs: changeAttrs,
       inclusive: false,
-      toDOM: (m) => ["ins", { class: m.attrs.wid ? "chg" : "chg mine", "data-wid": m.attrs.wid, title: changeTitle("Inserted", m) }, 0],
+      toDOM: (m) => ["ins", { class: m.attrs.wid ? "chg" : "chg mine", "data-wid": m.attrs.wid, "data-author": m.attrs.author, title: changeTitle("Inserted", m) }, 0],
     },
     del: {
       attrs: changeAttrs,
       inclusive: false,
-      toDOM: (m) => ["del", { class: m.attrs.wid ? "chg" : "chg mine", "data-wid": m.attrs.wid, title: changeTitle("Deleted", m) }, 0],
+      toDOM: (m) => ["del", { class: m.attrs.wid ? "chg" : "chg mine", "data-wid": m.attrs.wid, "data-author": m.attrs.author, title: changeTitle("Deleted", m) }, 0],
     },
     comment: {
       attrs: { ids: {} },

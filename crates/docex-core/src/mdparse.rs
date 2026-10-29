@@ -118,9 +118,13 @@ fn is_sentinel(c: char) -> bool {
 }
 
 /// Replace CriticMarkup delimiters with sentinel characters.
+///
+/// Each kind is tracked on its own rather than as a stack, because ranges
+/// from Word overlap: a comment can start inside an insertion and end after
+/// it (`{++a {==b++} c==}`).
 fn critic_prepass(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
-    let mut stack: Vec<char> = Vec::new();
+    let (mut ins, mut del, mut sub, mut hl, mut cm) = (0u32, 0u32, 0u32, 0u32, false);
     let mut it = src.char_indices().peekable();
     while let Some((i, c)) = it.next() {
         let rest = &src[i..];
@@ -131,74 +135,62 @@ fn critic_prepass(src: &str) -> String {
             }
             continue;
         }
-        let top = stack.last().copied();
         let mut take = |tok: &str, sent: char, out: &mut String| {
             out.push(sent);
             for _ in 1..tok.chars().count() {
                 it.next();
             }
         };
-        let in_comment = top == Some(CM_O);
-        if !in_comment {
-            if rest.starts_with("{++") {
-                take("{++", INS_O, &mut out);
-                stack.push(INS_O);
-                continue;
+        if cm {
+            if rest.starts_with("<<}") {
+                take("<<}", CM_C, &mut out);
+                cm = false;
+            } else {
+                out.push(c);
             }
-            if rest.starts_with("{--") {
-                take("{--", DEL_O, &mut out);
-                stack.push(DEL_O);
-                continue;
-            }
-            if rest.starts_with("{~~") {
-                take("{~~", SUB_O, &mut out);
-                stack.push(SUB_O);
-                continue;
-            }
-            if rest.starts_with("{==") {
-                take("{==", HL_O, &mut out);
-                stack.push(HL_O);
-                continue;
-            }
-        }
-        if rest.starts_with("{>>") && !in_comment {
-            take("{>>", CM_O, &mut out);
-            stack.push(CM_O);
             continue;
         }
-        match top {
-            Some(INS_O) if rest.starts_with("++}") => {
-                take("++}", INS_C, &mut out);
-                stack.pop();
-                continue;
+        let tok = [
+            ("{++", INS_O),
+            ("{--", DEL_O),
+            ("{~~", SUB_O),
+            ("{==", HL_O),
+            ("{>>", CM_O),
+            ("++}", INS_C),
+            ("--}", DEL_C),
+            ("~>", SUB_M),
+            ("~~}", SUB_C),
+            ("==}", HL_C),
+        ]
+        .into_iter()
+        .find(|(t, sent)| {
+            rest.starts_with(t)
+                && match *sent {
+                    INS_C => ins > 0,
+                    DEL_C => del > 0,
+                    SUB_M | SUB_C => sub > 0,
+                    HL_C => hl > 0,
+                    _ => true,
+                }
+        });
+        match tok {
+            Some((t, sent)) => {
+                take(t, sent, &mut out);
+                match sent {
+                    INS_O => ins += 1,
+                    DEL_O => del += 1,
+                    SUB_O => sub += 1,
+                    HL_O => hl += 1,
+                    CM_O => cm = true,
+                    INS_C => ins -= 1,
+                    DEL_C => del -= 1,
+                    SUB_C => sub -= 1,
+                    HL_C => hl -= 1,
+                    _ => {}
+                }
             }
-            Some(DEL_O) if rest.starts_with("--}") => {
-                take("--}", DEL_C, &mut out);
-                stack.pop();
-                continue;
-            }
-            Some(SUB_O) if rest.starts_with("~>") => {
-                take("~>", SUB_M, &mut out);
-                continue;
-            }
-            Some(SUB_O) if rest.starts_with("~~}") => {
-                take("~~}", SUB_C, &mut out);
-                stack.pop();
-                continue;
-            }
-            Some(HL_O) if rest.starts_with("==}") => {
-                take("==}", HL_C, &mut out);
-                stack.pop();
-                continue;
-            }
-            Some(CM_O) if rest.starts_with("<<}") => {
-                take("<<}", CM_C, &mut out);
-                stack.pop();
-                continue;
-            }
-            _ => {}
+            None => out.push(c),
         }
-        out.push(c);
     }
     out
 }
@@ -710,6 +702,16 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, ["Heading(1)", "Bullet(0)", "Bullet(1)", "Number(0)", "Quote", "T2x2:2"]);
+    }
+
+    #[test]
+    fn overlapping_comment_and_insertion() {
+        let b = parse("x {++Die {==FHNW++} muss==}{>>A: why<<} y");
+        let EBlock::Para(p) = &b[0] else { panic!() };
+        assert_eq!(p.text(), "x Die FHNW muss y");
+        let ins: String = p.atoms.iter().filter(|a| a.st == Status::Ins).map(|a| a.key.as_str()).collect();
+        assert_eq!(ins, "Die FHNW");
+        assert_eq!((p.comments[0].start, p.comments[0].end), (6, 15));
     }
 
     #[test]

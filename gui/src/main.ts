@@ -24,6 +24,8 @@ import {
   Italic,
   Link,
   MessageSquarePlus,
+  PanelLeft,
+  PanelRight,
   Redo2,
   Save,
   SaveAll,
@@ -33,6 +35,7 @@ import {
   Undo2,
 } from "lucide";
 import { initTheme } from "./theme";
+import { createCockpit } from "./cockpit";
 import { atomIndex, docToModel, modelToDoc, type PendingComment } from "./convert";
 import { imageUrls, KINDS, schema } from "./schema";
 import { trackTransaction } from "./track";
@@ -53,7 +56,7 @@ let tracking = false;
 let author = "";
 let localDirty = false;
 let busy = false;
-let sideTab: "changes" | "comments" = "changes";
+let sectionTitle = "";
 
 // ---------------------------------------------------------------------------
 // Small UI helpers
@@ -202,22 +205,39 @@ const view = new EditorView($("#editor"), {
     let t = tr;
     if (tracking) t = trackTransaction(view.state, tr, author) ?? tr;
     view.updateState(view.state.apply(t));
-    if (t.docChanged && !localDirty) {
-      localDirty = true;
-      renderStatus();
+    if (t.docChanged) {
+      cockpit.refreshSoon();
+      if (!localDirty) {
+        localDirty = true;
+        renderStatus();
+      }
     }
     updateToolbar();
   },
   handleDOMEvents: {
     click(_v, e) {
       const el = (e.target as HTMLElement).closest("ins.chg, del.chg") as HTMLElement | null;
-      if (el && el.dataset.wid) showChangePopover(el);
-      else hidePopover();
+      if (el && el.dataset.wid) {
+        showChangePopover(el);
+        cockpit.focusWid(el.dataset.wid);
+      } else hidePopover();
       const c = (e.target as HTMLElement).closest(".cmt") as HTMLElement | null;
-      if (c) highlightComment(c.dataset.ids?.split(" ")[0] || "", false);
+      if (c) cockpit.focusComment(c.dataset.ids?.split(" ")[0] || "");
       return false;
     },
   },
+});
+
+const cockpit = createCockpit({
+  view,
+  current: () => current,
+  me: () => author,
+  call: (cmd, args) => call(cmd, args),
+  toast,
+});
+cockpit.onSectionChange((t) => {
+  sectionTitle = t;
+  renderStatus();
 });
 
 function load(v: View, keepSelection = true) {
@@ -238,7 +258,7 @@ function load(v: View, keepSelection = true) {
   view.updateState(state);
   localDirty = false;
   for (const w of v.warnings) toast(w);
-  renderSidebar();
+  cockpit.refreshNow();
   renderStatus();
   updateToolbar();
   void getCurrentWindow().setTitle(`${v.path ? basename(v.path) : "Untitled"}${v.dirty ? " •" : ""} — docex`).catch(() => {});
@@ -353,7 +373,6 @@ async function addComment() {
   const sel = { pos: $from.before(), start: atomIndex(p, $from.parentOffset), end: atomIndex(p, $to.parentOffset) };
   const text = await askText("Comment", "", true);
   if (!text?.trim()) return;
-  sideTab = "comments";
   await call("sync", { pending: { ...sel, text: text.trim() } });
 }
 
@@ -385,139 +404,13 @@ function showChangePopover(el: HTMLElement) {
   pop.hidden = false;
 }
 
-// ---------------------------------------------------------------------------
-// Sidebar
-
-const KIND_LABEL: Record<string, string> = {
-  insert: "Inserted",
-  delete: "Deleted",
-  "move-to": "Moved here",
-  "move-from": "Moved away",
-  "paragraph-insert": "New paragraph",
-  "paragraph-delete": "Removed paragraph",
-  format: "Formatting",
-  "paragraph-format": "Paragraph style",
-  "row-insert": "New table row",
-  "row-delete": "Removed table row",
-  "table-format": "Table formatting",
-  "section-format": "Page setup",
-};
-
-function scrollToSelector(sel: string) {
-  const el = view.dom.querySelector(sel) as HTMLElement | null;
-  if (!el) return false;
-  el.scrollIntoView({ block: "center", behavior: "smooth" });
-  el.classList.add("flash");
-  setTimeout(() => el.classList.remove("flash"), 1200);
-  return true;
-}
-
-function highlightComment(id: string, scroll = true) {
-  document.querySelectorAll(".comment-card.active").forEach((e) => e.classList.remove("active"));
-  const card = document.querySelector(`.comment-card[data-id="${id}"]`);
-  if (card) {
-    if (sideTab !== "comments") {
-      sideTab = "comments";
-      renderSidebar();
-      return highlightComment(id, scroll);
-    }
-    card.classList.add("active");
-    card.scrollIntoView({ block: "nearest" });
-  }
-  if (scroll) scrollToSelector(`.cmt[data-ids~="${id}"]`);
-}
-
-function changeCard(c: Change) {
-  const card = h(
-    "div",
-    { class: `change-card ${c.kind}` },
-    h("div", { class: "meta" }, h("b", {}, KIND_LABEL[c.kind] ?? c.kind), ` · ${c.author || "unknown"}`, c.part !== "body" ? ` · ${c.part}` : ""),
-    h("div", { class: "date" }, shortDate(c.date)),
-    c.text && c.text !== "¶" ? h("div", { class: "excerpt" }, c.text) : "",
-    h(
-      "div",
-      { class: "row" },
-      h("button", { textContent: "Accept", onclick: (e: Event) => { e.stopPropagation(); void accept(c.wids, true); } }),
-      h("button", { textContent: "Reject", onclick: (e: Event) => { e.stopPropagation(); void accept(c.wids, false); } }),
-    ),
-  );
-  card.onclick = () => c.wids.some((w) => scrollToSelector(`[data-wid="${w}"]`));
-  return card;
-}
-
-function commentCard(c: Comment, replies: Comment[]) {
-  const card = h("div", { class: `comment-card${c.done ? " done" : ""}` });
-  card.dataset.id = c.id;
-  const one = (x: Comment, reply: boolean) =>
-    h(
-      "div",
-      { class: reply ? "reply" : "" },
-      h("div", { class: "meta" }, h("b", {}, x.author || "unknown"), ` · ${shortDate(x.date)}`),
-      h("div", { class: "text" }, x.text),
-    );
-  if (c.anchor) card.append(h("div", { class: "anchor" }, `“${c.anchor.length > 90 ? c.anchor.slice(0, 88) + "…" : c.anchor}”`));
-  card.append(one(c, false));
-  for (const r of replies) card.append(one(r, true));
-  card.append(
-    h(
-      "div",
-      { class: "row" },
-      h("button", {
-        textContent: "Reply",
-        onclick: async (e: Event) => {
-          e.stopPropagation();
-          const text = await askText(`Reply to ${c.author}`, "", true);
-          if (text?.trim()) await call("comment_reply", { id: c.id, text: text.trim() });
-        },
-      }),
-      h("button", { textContent: c.done ? "Reopen" : "Resolve", onclick: (e: Event) => { e.stopPropagation(); void call("comment_done", { id: c.id, done: !c.done }); } }),
-      h("button", {
-        textContent: "Delete",
-        onclick: async (e: Event) => {
-          e.stopPropagation();
-          if (await ask("Delete this comment and its replies?", { title: "docex", kind: "warning" })) await call("comment_delete", { id: c.id });
-        },
-      }),
-    ),
-  );
-  card.onclick = () => highlightComment(c.id);
-  return card;
-}
-
-function renderSidebar() {
-  const changes = current?.changes ?? [];
-  const comments = current?.comments ?? [];
-  const tops = comments.filter((c) => !c.parent);
-  const tab = (id: typeof sideTab, label: string, n: number) =>
-    h("button", { class: `tab${sideTab === id ? " active" : ""}`, onclick: () => { sideTab = id; renderSidebar(); } }, `${label} `, h("span", { class: "count" }, String(n)));
-  const body = h("div", { class: "side-body" });
-  if (sideTab === "changes") {
-    body.append(
-      h(
-        "div",
-        { class: "row side-actions" },
-        h("button", { textContent: "Accept all", disabled: !changes.length, onclick: () => call("resolve_all", { accept: true }) }),
-        h("button", { textContent: "Reject all", disabled: !changes.length, onclick: () => call("resolve_all", { accept: false }) }),
-        h("button", { textContent: "Refresh", title: "Turn your edits into tracked changes now", onclick: () => call("sync") }),
-      ),
-    );
-    if (!changes.length) body.append(h("p", { class: "empty" }, "No tracked changes."));
-    if (localDirty) body.append(h("p", { class: "hint" }, "Your latest edits show up here after Refresh or Save."));
-    for (const c of changes) body.append(changeCard(c));
-  } else {
-    body.append(h("div", { class: "row side-actions" }, h("button", { textContent: "Comment on selection", onclick: addComment })));
-    if (!tops.length) body.append(h("p", { class: "empty" }, "No comments."));
-    for (const c of tops) body.append(commentCard(c, comments.filter((r) => r.parent === c.id)));
-  }
-  $("#sidebar").replaceChildren(h("div", { class: "tabs" }, tab("changes", "Changes", changes.length), tab("comments", "Comments", tops.length)), body);
-}
-
 function renderStatus() {
   const s = $("#status");
   const dirty = isDirty();
   s.replaceChildren(
     h("span", { class: "path", title: current?.path ?? "" }, current?.path ?? "Untitled"),
     dirty ? h("span", { class: "dirty" }, "● unsaved") : "",
+    sectionTitle ? h("span", { class: "section" }, `§ ${sectionTitle}`) : "",
     h("span", { class: "spacer" }),
     h("span", {}, tracking ? "tracking changes" : "editing directly"),
     h("button", {
@@ -608,7 +501,25 @@ $("#toolbar").append(
   tableCtx,
   h("span", { class: "grow" }),
   trackSwitch,
+  sep(),
+  panelToggle("outline", PanelLeft, "Outline  Ctrl+1"),
+  panelToggle("sidebar", PanelRight, "Review  Ctrl+2"),
 );
+
+function panelToggle(id: string, ic: IconNode, tip: string) {
+  const b = tb(ic, tip, () => togglePanel(id));
+  b.dataset.panel = id;
+  return b;
+}
+
+function togglePanel(id: string, show?: boolean) {
+  const el = document.getElementById(id)!;
+  const hide = show === undefined ? !el.hidden : !show;
+  el.hidden = hide;
+  localStorage.setItem(`docex-hide-${id}`, hide ? "1" : "");
+  document.querySelector(`[data-panel="${id}"]`)?.classList.toggle("active", !hide);
+  cockpit.refreshSoon();
+}
 
 function updateToolbar() {
   const { $from, from, to, empty } = view.state.selection;
@@ -641,6 +552,9 @@ document.addEventListener("keydown", (e) => {
   } else if (k === "n") {
     e.preventDefault();
     void newFile();
+  } else if (k === "1" || k === "2") {
+    e.preventDefault();
+    togglePanel(k === "1" ? "outline" : "sidebar");
   }
 });
 document.addEventListener("mousedown", (e) => {
@@ -652,7 +566,8 @@ void getCurrentWindow().onCloseRequested(async (e) => {
 });
 
 (async () => {
-  await initTheme();
+  for (const id of ["outline", "sidebar"]) togglePanel(id, !localStorage.getItem(`docex-hide-${id}`));
+  await initTheme(() => cockpit.refreshSoon());
   author = localStorage.getItem("docex-author") || (await invoke<string>("get_author"));
   await invoke("set_author", { name: author });
   const p = await invoke<string | null>("initial_path");
