@@ -40,6 +40,7 @@ Files are changed in place with a `FILE.docx~` backup. Use `-o OUT.docx` to writ
 | Tables with merged cells | read-only `docex-table` block |
 | Images | `![alt](media/image1.png)` (`cat --media DIR` extracts them) |
 | Captions (figures, tables) | `: Figure 1: text` |
+| Equations (Office Math) | `$E=mc^2$` inline, `$$\int_0^1 x\,dx$$` on its own line |
 | Footnotes, endnotes | `[^1]` with `[^1]: text` at the end (endnotes `[^e1]`) |
 | Text boxes | `<!-- docex:textbox tb1 -->` … paragraphs … `<!-- /docex:textbox -->` after the paragraph they're anchored in |
 | Tracked insertion / deletion | `{++new++}` / `{--old--}` |
@@ -47,6 +48,8 @@ Files are changed in place with a `FILE.docx~` backup. Use `-o OUT.docx` to writ
 | TOC, content controls, shapes, equations, page breaks | `<!-- docex:… -->` placeholders, kept as-is |
 
 You can write CriticMarkup yourself: `{++text++}`, `{--text--}` and `{~~old~>new~~}` are always recorded as tracked changes, even with tracking off. A new `{==text==}{>>remark<<}` (or a bare `{>>remark<<}`) becomes a Word comment. New images referenced by path (PNG, JPEG, GIF) are embedded and sized to the page width.
+
+Equations are Word's own (Office Math), shown and written as LaTeX. Existing equations convert to LaTeX: fractions, scripts, roots, sums/integrals/products with limits, `\left…\right` delimiters, matrices, functions and limits, accents, over/underlines, `\text`, `\mathbf`/`\mathbb`/`\mathcal`, Greek letters and the usual operators. A new `$…$` becomes a real Word equation you can keep editing in Word. An equation using something outside that set shows as an `[equation]` placeholder and is kept as it is. In tables, write `|` inside a formula as `\|`.
 
 Footnote text, text box text and captions are edited like any other paragraph, with tracked changes. A new `[^any-label]` reference plus its `[^any-label]: text` definition creates a Word footnote, which Word numbers itself. A new `: Figure 3: text` caption gets a real auto-numbering field (`SEQ Figure`), so Word renumbers it. Tracked changes in footnotes show up in `docex changes` like any other; edits inside a text box are written to both copies Word keeps of it.
 
@@ -67,6 +70,8 @@ It's built for reviewing, not just editing:
 - **People:** a one-line summary ("143 changes by 7 · 15 threads (15 open) by 4") and a chip per person. Hover a chip for their breakdown; click to filter to them (shift+click adds people). Their edits stay highlighted in the text and everyone else's fade.
 - **Bulk actions follow the filter:** accept or reject everything shown, by one person or in one section, at once.
 - **Activity rail:** a minimap beside the page marks every change (in its author's color) and comment; click to jump.
+- **Formulas:** `$…$` or `$$…$$` while typing (or the Σ button) inserts an equation, typeset with KaTeX. Click one to edit it with a live preview. It's saved as a native Word equation.
+- **Markdown while you type:** `## ` makes a heading, `- `/`1. ` lists (two leading spaces per level), `> ` a quote, ```` ``` ```` code, `: ` a caption. `**bold**`, `*italic*`, `` `code` ``, `~~strike~~` and `[text](url)` format as you close them. Backspace right after a shortcut undoes it, and pasting Markdown inserts it formatted.
 - **Keys:** Alt+↑/↓ next/previous item, Alt+A accept, Alt+R reject, Ctrl+1/Ctrl+2 toggle the panels.
 - **Omarchy:** the app follows the active theme's palette and monospace font, and recolors live on `omarchy theme set`.
 

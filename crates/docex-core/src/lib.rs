@@ -3,6 +3,7 @@
 
 pub mod comments;
 pub mod docmodel;
+pub mod math;
 pub mod mdparse;
 pub mod model;
 pub mod package;
@@ -495,6 +496,19 @@ impl Docx {
         }
         self.numbering = numbering;
         self.dirty.numbering |= carry.numbering_changed;
+        if carry.math_added {
+            const M_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/math";
+            if self.dom.root.attr("xmlns:m").is_none() {
+                self.dom.root.set_attr("xmlns:m", M_NS);
+            }
+            for np in &mut self.notes {
+                if let Some(d) = &mut np.doc {
+                    if d.root.attr("xmlns:m").is_none() && np.dirty {
+                        d.root.set_attr("xmlns:m", M_NS);
+                    }
+                }
+            }
+        }
         let (stats, warnings, new_comments, media) = (carry.stats, carry.warnings, carry.new_comments, carry.media);
         for (part, data) in media {
             let ext = part.rsplit('.').next().unwrap_or("png").to_lowercase();

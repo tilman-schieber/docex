@@ -218,6 +218,23 @@ fn para_to_model(p: Option<&Para>, e: &EPara, known_comments: &HashSet<String>) 
     MPara { kind, level, spans, new_comments: Vec::new() }
 }
 
+/// A model for Markdown text (e.g. pasted), not tied to a document.
+pub fn from_markdown(md: &str) -> DocModel {
+    let parsed = crate::mdparse::parse_full(md);
+    let none = HashSet::new();
+    let mut out = DocModel::default();
+    for b in &parsed.blocks {
+        out.blocks.push(match b {
+            EBlock::Para(e) => MBlock::Para(para_to_model(None, e, &none)),
+            EBlock::Table(rows) => MBlock::Table {
+                rows: rows.iter().map(|r| r.iter().map(|c| c.iter().map(|e| para_to_model(None, e, &none)).collect()).collect()).collect(),
+            },
+            EBlock::Opaque(_) => continue,
+        });
+    }
+    out
+}
+
 /// Build the model from blocks rendered and reparsed (`parsed`), the
 /// projection they came from, and the render maps.
 pub fn export(

@@ -30,6 +30,8 @@ function inlineNodes(spans: Span[]): PMNode[] {
       else if (o === "\t") out.push(schema.text("\t", m));
       else if (o.startsWith("img:")) out.push(nodes.image.create({ src: o.slice(4), alt: s.alt || "" }, null, m));
       else if (o.startsWith("fn:")) out.push(nodes.fnref.create({ label: o.slice(3) }, null, m));
+      else if (o.startsWith("mathd:")) out.push(nodes.math.create({ latex: o.slice(6), display: true }, null, m));
+      else if (o.startsWith("math:")) out.push(nodes.math.create({ latex: o.slice(5), display: false }, null, m));
       else out.push(nodes.obj.create({ key: o }, null, m));
     } else if (s.t) {
       out.push(schema.text(s.t, m));
@@ -100,6 +102,7 @@ function inlineSpans(p: PMNode): Span[] {
       s.obj = "img:" + child.attrs.src;
       if (child.attrs.alt) s.alt = child.attrs.alt;
     } else if (child.type === nodes.fnref) s.obj = "fn:" + child.attrs.label;
+    else if (child.type === nodes.math) s.obj = (child.attrs.display ? "mathd:" : "math:") + child.attrs.latex;
     else if (child.type === nodes.obj) s.obj = child.attrs.key;
     else return;
     out.push(s);

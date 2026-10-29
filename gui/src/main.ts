@@ -1,4 +1,6 @@
+import "katex/dist/katex.min.css";
 import "./style.css";
+import "./tooltip";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask, open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -29,15 +31,17 @@ import {
   Redo2,
   Save,
   SaveAll,
-  Strikethrough,
+  Sigma,
   Table,
   Trash2,
   Undo2,
 } from "lucide";
 import { initTheme } from "./theme";
+import { highlightPlugin } from "./highlight";
+import { markdownBackspace, markdownRules, pasteMarkdown } from "./markdown";
 import { createCockpit } from "./cockpit";
 import { atomIndex, docToModel, modelToDoc, type PendingComment } from "./convert";
-import { imageUrls, KINDS, schema } from "./schema";
+import { imageUrls, KINDS, renderMath, schema } from "./schema";
 import { trackTransaction } from "./track";
 import type { Change, Comment, View } from "./types";
 
@@ -93,6 +97,63 @@ function askText(title: string, initial = "", multiline = false): Promise<string
     input.focus();
     (input as HTMLInputElement).select?.();
   });
+}
+
+/** Formula editor with a live preview. Resolves to null when cancelled. */
+function editMath(latex: string, display: boolean): Promise<{ latex: string; display: boolean } | null> {
+  return new Promise((resolve) => {
+    const modal = $("#modal");
+    const input = h("textarea", { value: latex, rows: 3, className: "latex", spellcheck: false });
+    const preview = h("div", { class: "math-preview" });
+    const disp = h("input", { type: "checkbox", checked: display }) as HTMLInputElement;
+    const update = () => renderMath(preview, input.value, disp.checked);
+    const done = (ok: boolean) => {
+      modal.hidden = true;
+      modal.replaceChildren();
+      view.focus();
+      resolve(ok && input.value.trim() ? { latex: input.value.trim(), display: disp.checked } : null);
+    };
+    input.addEventListener("input", update);
+    disp.addEventListener("change", update);
+    input.addEventListener("keydown", (e) => {
+      const ke = e as KeyboardEvent;
+      if (ke.key === "Escape") done(false);
+      if (ke.key === "Enter" && (ke.ctrlKey || ke.metaKey || !ke.shiftKey)) {
+        e.preventDefault();
+        done(true);
+      }
+    });
+    modal.replaceChildren(
+      h(
+        "div",
+        { class: "dialog" },
+        h("label", {}, "Formula (LaTeX)"),
+        input,
+        preview,
+        h(
+          "div",
+          { class: "row" },
+          h("label", { class: "check" }, disp, " own line (display)"),
+          h("span", { class: "grow" }),
+          h("button", { textContent: "Cancel", onclick: () => done(false) }),
+          h("button", { class: "primary", textContent: "OK", onclick: () => done(true) }),
+        ),
+        h("div", { class: "hint" }, "Saved as a Word equation. Enter: OK · Shift+Enter: new line · Esc: cancel"),
+      ),
+    );
+    modal.hidden = false;
+    update();
+    input.focus();
+  });
+}
+
+async function insertMath(pos?: number) {
+  const node = pos !== undefined ? view.state.doc.nodeAt(pos) : null;
+  const r = await editMath(node?.attrs.latex ?? "", node?.attrs.display ?? false);
+  if (!r) return;
+  const m = schema.nodes.math.create(r);
+  const tr = pos !== undefined && node ? view.state.tr.replaceWith(pos, pos + node.nodeSize, m) : view.state.tr.replaceSelectionWith(m);
+  view.dispatch(tr.scrollIntoView());
 }
 
 function shortDate(d: string) {
@@ -176,6 +237,7 @@ const toggleLink: Command = (state, dispatch) => {
 function plugins() {
   return [
     history(),
+    markdownRules(),
     keymap({
       "Mod-z": undo,
       "Mod-y": redo,
@@ -189,6 +251,7 @@ function plugins() {
         if (dispatch) dispatch(state.tr.replaceSelectionWith(schema.nodes.hard_break.create()).scrollIntoView());
         return true;
       },
+      Backspace: markdownBackspace,
       Tab: (s, d) => (isInTable(s) ? goToNextCell(1)(s, d) : shiftLevel(1)(s, d) || true),
       "Shift-Tab": (s, d) => (isInTable(s) ? goToNextCell(-1)(s, d) : shiftLevel(-1)(s, d) || true),
     }),
@@ -196,6 +259,7 @@ function plugins() {
     dropCursor(),
     gapCursor(),
     tableEditing(),
+    highlightPlugin,
   ];
 }
 
@@ -203,7 +267,16 @@ const view = new EditorView($("#editor"), {
   state: EditorState.create({ doc: schema.nodes.doc.create(null, schema.nodes.para.create()), plugins: plugins() }),
   dispatchTransaction(tr: Transaction) {
     let t = tr;
-    if (tracking) t = trackTransaction(view.state, tr, author) ?? tr;
+    if (tracking) {
+      // Never lose a keystroke: if marking it as a tracked change fails,
+      // apply the plain edit (the core still records it on save).
+      try {
+        t = trackTransaction(view.state, tr, author) ?? tr;
+      } catch (err) {
+        console.error("docex: live tracking failed; applying the edit as is", err);
+        t = tr;
+      }
+    }
     view.updateState(view.state.apply(t));
     if (t.docChanged) {
       cockpit.refreshSoon();
@@ -213,6 +286,16 @@ const view = new EditorView($("#editor"), {
       }
     }
     updateToolbar();
+  },
+  handleClickOn(_v, _pos, node, nodePos) {
+    if (node.type === schema.nodes.math) {
+      void insertMath(nodePos);
+      return true;
+    }
+    return false;
+  },
+  handlePaste(v, e) {
+    return pasteMarkdown(v, e, () => ({ on: tracking, author }));
   },
   handleDOMEvents: {
     click(_v, e) {
@@ -415,7 +498,7 @@ function renderStatus() {
     h("span", {}, tracking ? "tracking changes" : "editing directly"),
     h("button", {
       class: "author",
-      title: "Name used for your changes and comments",
+      title: "",
       onclick: async () => {
         const a = await askText("Your name (for changes and comments)", author);
         if (a?.trim()) {
@@ -427,6 +510,7 @@ function renderStatus() {
       },
     }, `@${author}`),
   );
+  s.querySelector<HTMLElement>(".author")!.dataset.tip = "Your name on changes and comments  click to change";
   if (typeof updateToolbar === "function") updateToolbar();
 }
 
@@ -452,7 +536,8 @@ function tb(ic: IconNode, tip: string, run: () => unknown, label?: string): HTML
 
 const sep = () => h("span", { class: "sep" });
 
-const kindSelect = h("select", { title: "Paragraph style" });
+const kindSelect = h("select");
+kindSelect.dataset.tip = "Paragraph style  or type # , - , 1. , > at the start of a line";
 for (const [k, label] of KINDS) kindSelect.append(h("option", { value: k }, label));
 kindSelect.onchange = () => {
   setKind(kindSelect.value)(view.state, view.dispatch);
@@ -463,7 +548,6 @@ const styles = h("span", { class: "styles" }, kindSelect, icon(ChevronDown));
 const markButtons: [HTMLButtonElement, MarkType][] = [
   [tb(Bold, "Bold  Ctrl+B", () => toggleMark(schema.marks.strong)(view.state, view.dispatch)), schema.marks.strong],
   [tb(Italic, "Italic  Ctrl+I", () => toggleMark(schema.marks.em)(view.state, view.dispatch)), schema.marks.em],
-  [tb(Strikethrough, "Strikethrough", () => toggleMark(schema.marks.strike)(view.state, view.dispatch)), schema.marks.strike],
   [tb(Code, "Code  Ctrl+`", () => toggleMark(schema.marks.code)(view.state, view.dispatch)), schema.marks.code],
   [tb(Link, "Link  Ctrl+K", () => toggleLink(view.state, view.dispatch)), schema.marks.link],
 ];
@@ -473,17 +557,17 @@ const tableCtx = h(
   "span",
   { class: "tb-ctx" },
   sep(),
-  tb(BetweenHorizontalEnd, "Add row below", () => addRowAfter(view.state, view.dispatch)),
-  tb(Trash2, "Remove row", () => deleteRow(view.state, view.dispatch)),
+  tb(BetweenHorizontalEnd, "Add a table row below", () => addRowAfter(view.state, view.dispatch)),
+  tb(Trash2, "Remove this table row", () => deleteRow(view.state, view.dispatch)),
 );
 
 const trackSwitch = h("button", { class: "track-switch", onclick: () => void toggleTrack() }, h("span", { class: "knob" }), h("span", { class: "lbl" }, "Track changes"));
-trackSwitch.dataset.tip = "Word's Track Changes setting, saved in the document";
+trackSwitch.dataset.tip = "Track Changes: record your edits as suggestions others can accept or reject\n(Word's setting, saved in the document)";
 
 $("#toolbar").append(
   h("span", { class: "brand" }, "docex"),
-  tb(FilePlus, "New  Ctrl+N", newFile),
-  tb(FolderOpen, "Open  Ctrl+O", () => openFile()),
+  tb(FilePlus, "New document  Ctrl+N", newFile),
+  tb(FolderOpen, "Open a .docx  Ctrl+O", () => openFile()),
   saveBtn,
   tb(SaveAll, "Save as  Ctrl+Shift+S", () => saveFile(true)),
   sep(),
@@ -494,16 +578,17 @@ $("#toolbar").append(
   sep(),
   ...markButtons.map(([b]) => b),
   sep(),
-  tb(Image, "Insert image", insertImage),
-  tb(Table, "Insert table", insertTable),
-  tb(Asterisk, "Insert footnote", insertFootnote),
-  tb(MessageSquarePlus, "Comment on selection", addComment),
+  tb(Image, "Insert an image from a file", insertImage),
+  tb(Table, "Insert a 3×3 table", insertTable),
+  tb(Asterisk, "Insert a footnote at the cursor", insertFootnote),
+  tb(Sigma, "Insert a formula  or type $…$ / $$…$$", () => insertMath()),
+  tb(MessageSquarePlus, "Comment on the selected text", addComment),
   tableCtx,
   h("span", { class: "grow" }),
   trackSwitch,
   sep(),
-  panelToggle("outline", PanelLeft, "Outline  Ctrl+1"),
-  panelToggle("sidebar", PanelRight, "Review  Ctrl+2"),
+  panelToggle("outline", PanelLeft, "Show or hide the outline  Ctrl+1"),
+  panelToggle("sidebar", PanelRight, "Show or hide changes and comments  Ctrl+2"),
 );
 
 function panelToggle(id: string, ic: IconNode, tip: string) {
@@ -512,14 +597,47 @@ function panelToggle(id: string, ic: IconNode, tip: string) {
   return b;
 }
 
-function togglePanel(id: string, show?: boolean) {
-  const el = document.getElementById(id)!;
-  const hide = show === undefined ? !el.hidden : !show;
-  el.hidden = hide;
-  localStorage.setItem(`docex-hide-${id}`, hide ? "1" : "");
-  document.querySelector(`[data-panel="${id}"]`)?.classList.toggle("active", !hide);
+type PanelId = "outline" | "sidebar";
+const PANELS: PanelId[] = ["outline", "sidebar"];
+/** Below these window widths a panel only shows as an overlay, so the page keeps room. */
+const MIN_WIDTH: Record<PanelId, number> = { outline: 1180, sidebar: 860 };
+const panelPref: Record<PanelId, boolean> = { outline: true, sidebar: true };
+const overlay: Record<PanelId, boolean> = { outline: false, sidebar: false };
+
+function layout() {
+  for (const id of PANELS) {
+    const el = document.getElementById(id)!;
+    const narrow = window.innerWidth < MIN_WIDTH[id];
+    const asOverlay = narrow && overlay[id];
+    el.hidden = narrow ? !asOverlay : !panelPref[id];
+    el.classList.toggle("overlay", asOverlay);
+    document.querySelector(`[data-panel="${id}"]`)?.classList.toggle("active", !el.hidden);
+  }
+}
+
+function togglePanel(id: string) {
+  const p = id as PanelId;
+  if (window.innerWidth < MIN_WIDTH[p]) {
+    overlay[p] = !overlay[p];
+  } else {
+    panelPref[p] = !panelPref[p];
+    localStorage.setItem(`docex-hide-${p}`, panelPref[p] ? "" : "1");
+  }
+  layout();
   cockpit.refreshSoon();
 }
+
+window.addEventListener("resize", () => {
+  layout();
+  cockpit.refreshSoon();
+});
+// Clicking into the page closes overlay panels.
+document.getElementById("page-area")!.addEventListener("mousedown", () => {
+  if (overlay.outline || overlay.sidebar) {
+    overlay.outline = overlay.sidebar = false;
+    layout();
+  }
+});
 
 function updateToolbar() {
   const { $from, from, to, empty } = view.state.selection;
@@ -566,7 +684,8 @@ void getCurrentWindow().onCloseRequested(async (e) => {
 });
 
 (async () => {
-  for (const id of ["outline", "sidebar"]) togglePanel(id, !localStorage.getItem(`docex-hide-${id}`));
+  for (const id of PANELS) panelPref[id] = !localStorage.getItem(`docex-hide-${id}`);
+  layout();
   await initTheme(() => cockpit.refreshSoon());
   author = localStorage.getItem("docex-author") || (await invoke<string>("get_author"));
   await invoke("set_author", { name: author });

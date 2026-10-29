@@ -574,6 +574,12 @@ impl Writer {
             self.out.push('\t');
         } else if let Some(t) = k.strip_prefix("img:") {
             self.out.push_str(&format!("![{}]({})", escape_plain(alt), link_dest(t)));
+        } else if let Some(l) = k.strip_prefix("mathd:") {
+            let l = if self.mode.table { l.replace('|', "\\|") } else { l.to_string() };
+            self.out.push_str(&format!("$${l}$$"));
+        } else if let Some(l) = k.strip_prefix("math:") {
+            let l = if self.mode.table { l.replace('|', "\\|") } else { l.to_string() };
+            self.out.push_str(&format!("${l}$"));
         } else if let Some(n) = k.strip_prefix("fn:") {
             self.out.push_str(&format!("[^{n}]"));
         } else {
@@ -604,6 +610,7 @@ fn escape_char(c: char, prev: Option<char>, next: Option<char>, line_start: bool
         '#' => line_start || mode.heading,
         '>' | '-' | '+' | '=' | ':' => line_start,
         '!' => next == Some('['),
+        '$' => true,
         _ => false,
     };
     if esc { format!("\\{c}") } else { c.to_string() }

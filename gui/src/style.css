@@ -273,25 +273,23 @@ svg.ico {
   background: var(--green);
 }
 
-/* Tooltips (data-tip) */
-[data-tip] {
-  position: relative;
-}
-
-[data-tip]:hover::after {
-  content: attr(data-tip);
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
-  white-space: nowrap;
+/* Tooltips: one floating element, positioned by tooltip.ts */
+#tip {
+  position: fixed;
+  z-index: 100;
+  max-width: 320px;
   background: var(--raised);
   color: var(--text);
-  border: 1px solid var(--hair);
-  padding: 3px 7px;
+  border: 1px solid var(--line);
+  padding: 4px 8px;
   font-size: 11.5px;
-  z-index: 50;
   pointer-events: none;
+  white-space: pre-line;
+}
+
+#tip .key {
+  color: var(--faint);
+  margin-left: 10px;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -301,6 +299,25 @@ main {
   flex: 1;
   display: flex;
   min-height: 0;
+  position: relative;
+}
+
+#outline.overlay,
+#sidebar.overlay {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 15;
+  box-shadow: 0 0 24px rgba(0, 0, 0, 0.35);
+}
+
+#outline.overlay {
+  left: 0;
+}
+
+#sidebar.overlay {
+  right: 0;
+  max-width: 92vw;
 }
 
 #page-wrap {
@@ -312,6 +329,7 @@ main {
 
 .page {
   max-width: 820px;
+  min-width: 0;
   margin: 0 auto;
   background: var(--page);
   border: 1px solid var(--hair);
@@ -547,6 +565,53 @@ main {
 
 .ProseMirror img.ProseMirror-selectednode {
   outline: 2px solid var(--accent);
+}
+
+.ProseMirror .math {
+  cursor: pointer;
+  padding: 0 1px;
+}
+
+.ProseMirror .math:hover {
+  outline: 1px dashed var(--accent);
+  outline-offset: 2px;
+}
+
+.ProseMirror .math.display {
+  display: block;
+  text-align: center;
+  margin: 0.4em 0;
+}
+
+.ProseMirror .math.ProseMirror-selectednode {
+  outline: 2px solid var(--accent);
+}
+
+.math-preview {
+  min-height: 2.6em;
+  padding: 10px;
+  background: var(--page);
+  border: 1px solid var(--hair);
+  text-align: center;
+  overflow-x: auto;
+  font-size: 16px;
+}
+
+#modal textarea.latex {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+#modal .check {
+  color: var(--dim);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#modal .hint {
+  color: var(--faint);
+  font-size: 11px;
 }
 
 .ProseMirror sup.fnref {
@@ -1441,4 +1506,37 @@ main {
 
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+@media (max-width: 900px) {
+  #page-wrap {
+    padding: 16px 8px 80px;
+  }
+
+  .page {
+    padding: 32px 28px;
+  }
+}
+
+/* Narrow windows: keep the whole toolbar reachable. */
+@media (max-width: 1050px) {
+  #toolbar .brand,
+  .track-switch .lbl {
+    display: none;
+  }
+
+  .styles select {
+    width: 118px;
+  }
+
+  #toolbar .sep {
+    margin: 0 3px;
+  }
+}
+
+@media (max-width: 760px) {
+  #toolbar .tb[data-tip^="Save as"],
+  #toolbar .tb[data-tip^="Redo"] {
+    display: none;
+  }
 }

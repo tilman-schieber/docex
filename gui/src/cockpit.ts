@@ -17,6 +17,7 @@ import { TextSelection } from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
 import { analyze, inSubtree, type Index, type Item, type Person } from "./analyze";
 import { schema } from "./schema";
+import { setHighlight } from "./highlight";
 import { authorColor, initials } from "./theme";
 import type { View } from "./types";
 
@@ -112,17 +113,9 @@ export function createCockpit(app: App) {
   }
 
   function highlight(it: Item | null, on: boolean) {
-    document.querySelectorAll(".ProseMirror .hl").forEach((e) => e.classList.remove("hl"));
-    if (!it || !on) return;
-    const els: Element[] = [];
-    for (const w of it.wids) els.push(...view.dom.querySelectorAll(`[data-wid="${CSS.escape(w)}"]`));
-    if (it.comment) els.push(...view.dom.querySelectorAll(`.cmt[data-ids~="${CSS.escape(it.comment.id)}"]`));
-    if (it.pending) for (const p of it.parts) {
-      const d = view.domAtPos(p.from + 1);
-      const el = d.node.nodeType === 3 ? d.node.parentElement : (d.node as Element);
-      if (el) els.push(el);
-    }
-    els.forEach((e) => e.classList.add("hl"));
+    if (!it || !on) return setHighlight(view, null);
+    const ranges = it.parts.length ? it.parts : it.from !== null ? [{ from: it.from, to: it.to ?? it.from }] : [];
+    setHighlight(view, ranges.length ? ranges : null);
   }
 
   function focusItem(it: Item, scroll = true) {
@@ -247,7 +240,7 @@ export function createCockpit(app: App) {
               "span",
               {
                 class: "ol-badges",
-                title: "Show only this section in the review list",
+                "data-tip": "Changes / comments here (click: show only this section)",
                 onclick: (e: Event) => {
                   e.stopPropagation();
                   filter.section = filter.section === i ? null : i;
@@ -493,14 +486,14 @@ export function createCockpit(app: App) {
       { class: "bulk" },
       h("span", { class: "scope" }, scope.length ? `Showing ${list.length} · ${scope.join(" · ")}` : `Showing ${list.length}`),
       scope.length || filter.q || filter.show !== "all"
-        ? h("button", { class: "clear", onclick: () => { filter.people.clear(); filter.section = null; filter.q = ""; filter.show = "all"; renderAll(); } }, "clear")
+        ? h("button", { class: "clear", "data-tip": "Show everything again", onclick: () => { filter.people.clear(); filter.section = null; filter.q = ""; filter.show = "all"; renderAll(); } }, "clear")
         : null,
       h("span", { class: "grow" }),
       changeItems.length
-        ? h("button", { class: "ghost ok", onclick: () => resolve(changeItems, true) }, icon(Check), `Accept ${changeItems.length}`)
+        ? h("button", { class: "ghost ok", "data-tip": "Accept every change listed below", onclick: () => resolve(changeItems, true) }, icon(Check), `Accept ${changeItems.length}`)
         : null,
       changeItems.length
-        ? h("button", { class: "ghost no", onclick: () => resolve(changeItems, false) }, icon(X), `Reject ${changeItems.length}`)
+        ? h("button", { class: "ghost no", "data-tip": "Reject every change listed below", onclick: () => resolve(changeItems, false) }, icon(X), `Reject ${changeItems.length}`)
         : null,
     );
     const feed = h("div", { class: "feed", id: "feed" });
@@ -535,8 +528,8 @@ export function createCockpit(app: App) {
               ? h(
                   "span",
                   { class: "sec-acts" },
-                  h("button", { title: "Accept all shown in this section", onclick: (e: Event) => { e.stopPropagation(); void resolve(secChanges, true); } }, icon(Check, "ico tiny")),
-                  h("button", { title: "Reject all shown in this section", onclick: (e: Event) => { e.stopPropagation(); void resolve(secChanges, false); } }, icon(X, "ico tiny")),
+                  h("button", { "data-tip": "Accept all shown in this section", onclick: (e: Event) => { e.stopPropagation(); void resolve(secChanges, true); } }, icon(Check, "ico tiny")),
+                  h("button", { "data-tip": "Reject all shown in this section", onclick: (e: Event) => { e.stopPropagation(); void resolve(secChanges, false); } }, icon(X, "ico tiny")),
                 )
               : null,
           ),

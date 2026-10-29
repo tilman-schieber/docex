@@ -1,5 +1,15 @@
 import { Schema, type DOMOutputSpec, type Mark, type Node as PMNode } from "prosemirror-model";
 import { tableNodes } from "prosemirror-tables";
+import katex from "katex";
+
+/** Typeset LaTeX into `el` (shows the source if it doesn't parse). */
+export function renderMath(el: HTMLElement, latex: string, display: boolean) {
+  try {
+    katex.render(latex || "\\square", el, { displayMode: display, throwOnError: false, strict: "ignore" });
+  } catch {
+    el.textContent = latex;
+  }
+}
 
 /** Data URLs for images, by the `src` stored in image nodes. */
 export const imageUrls = new Map<string, string>();
@@ -72,6 +82,20 @@ export const schema = new Schema({
       parseDOM: [],
       toDOM(n) {
         return ["img", { src: imageUrls.get(n.attrs.src) || "", alt: n.attrs.alt, title: n.attrs.alt || n.attrs.src, "data-src": n.attrs.src }];
+      },
+    },
+    math: {
+      inline: true,
+      group: "inline",
+      atom: true,
+      attrs: { latex: {}, display: { default: false } },
+      toDOM(n) {
+        const el = document.createElement("span");
+        el.className = n.attrs.display ? "math display" : "math";
+        el.dataset.latex = n.attrs.latex;
+        el.title = "Click to edit the formula";
+        renderMath(el, n.attrs.latex, n.attrs.display);
+        return el;
       },
     },
     fnref: {

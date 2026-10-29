@@ -7,16 +7,18 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "tauri": "tauri",
-    "test": "vite build --ssr test/roundtrip.ts --outDir test-dist/roundtrip && vite build --ssr test/track.ts --outDir test-dist/track && node test/run.mjs"
+    "test": "vite build --ssr test/roundtrip.ts --outDir test-dist/roundtrip && vite build --ssr test/track.ts --outDir test-dist/track && vite build --ssr test/markdown.ts --outDir test-dist/markdown && node test-dist/markdown/markdown.js && node test/run.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-dialog": "^2.8.4",
+    "katex": "^0.19.1",
     "lucide": "^1.64.0",
     "prosemirror-commands": "^1.7.2",
     "prosemirror-dropcursor": "^1.8.4",
     "prosemirror-gapcursor": "^1.4.1",
     "prosemirror-history": "^1.5.1",
+    "prosemirror-inputrules": "^1.5.1",
     "prosemirror-keymap": "^1.2.3",
     "prosemirror-model": "^1.25.12",
     "prosemirror-state": "^1.4.4",

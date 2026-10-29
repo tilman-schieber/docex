@@ -496,11 +496,15 @@ fn walk_content(p: &mut Para, parent: &Element, ctx: &mut Vec<usize>, cx: &Ctx) 
                     ctx.pop();
                 }
             }
-            "m:oMath" | "m:oMathPara" => p.items.push(Item {
-                ctx: ctx.clone(),
-                run: None,
-                what: What::Obj { key: "<!--docex:math-->".into(), node: c.clone() },
-            }),
+            "m:oMath" | "m:oMathPara" => {
+                // Equations become LaTeX where the converter covers them.
+                let key = match crate::math::omml_to_latex(e) {
+                    Some(l) if e.is("m:oMathPara") => format!("mathd:{l}"),
+                    Some(l) => format!("math:{l}"),
+                    None => "<!--docex:math-->".into(),
+                };
+                p.items.push(Item { ctx: ctx.clone(), run: None, what: What::Obj { key, node: c.clone() } })
+            }
             "mc:AlternateContent" => p.items.push(Item {
                 ctx: ctx.clone(),
                 run: None,

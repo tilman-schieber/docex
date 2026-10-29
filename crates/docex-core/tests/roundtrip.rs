@@ -341,3 +341,49 @@ fn model_noop_on_rich_fixture_spans() {
     assert!(j.contains(r#""obj":"fn:13""#));
     assert!(j.contains(r#""label":"13""#));
 }
+
+#[test]
+fn markdown_paste_model() {
+    use docex_core::docmodel::{from_markdown, MBlock};
+    let m = from_markdown("# Title\n\n- one **two**\n\n| a | b |\n|---|---|\n| 1 | 2 |\n");
+    let kinds: Vec<String> = m
+        .blocks
+        .iter()
+        .map(|b| match b {
+            MBlock::Para(p) => p.kind.clone(),
+            MBlock::Table { rows } => format!("table{}", rows.len()),
+            MBlock::Opaque { .. } => "opaque".into(),
+        })
+        .collect();
+    assert_eq!(kinds, ["h1", "bullet", "table2"]);
+    let MBlock::Para(p) = &m.blocks[1] else { panic!() };
+    assert!(p.spans.iter().any(|s| s.t == "two" && s.b));
+}
+
+#[test]
+fn equations_roundtrip_and_track() {
+    // Equations written by pandoc (independent OMML) read back as LaTeX.
+    let mut d = fixture("pandoc-math.docx");
+    let before = d.dom.to_xml();
+    let md = d.render(View::Review);
+    assert!(md.contains("$\\sqrt{a^2+b^2}$"), "{md}");
+    assert!(md.contains("$\\sum_{k=0}^\\infty \\frac{x^k}{k!}$"), "{md}");
+    assert!(md.contains("\\begin{pmatrix} 1 & 0 \\\\ 0 & 1 \\end{pmatrix}"), "{md}");
+    assert!(!d.apply(&md, &opts(true)).unwrap().changed());
+    assert_eq!(d.dom.to_xml(), before);
+    // Editing a formula is a tracked replacement of the equation.
+    let mut d = fixture("math.docx");
+    let md = d.render(View::Review).replace("$E=mc^2$", "$E=mc^3$");
+    d.apply(&md, &opts(true)).unwrap();
+    let d = reopen(&mut d);
+    let md = d.render(View::Review);
+    assert!(md.contains("{--$E=mc^2$--}{++$E=mc^3$++}"), "{md}");
+    assert!(d.dom.to_xml().contains("<w:ins ") && d.dom.to_xml().contains("<m:oMath>"));
+    // A new display equation becomes m:oMathPara.
+    let mut d = docx(WORDY);
+    let md = d.render(View::Review).replace("Second clause stays.", "Second clause stays.\n\n$$\\frac{a}{b}$$");
+    d.apply(&md, &opts(false)).unwrap();
+    let xml = d.dom.to_xml();
+    assert!(xml.contains("<m:oMathPara><m:oMath><m:f>"), "{xml}");
+    assert!(d.render(View::Review).contains("$$\\frac{a}{b}$$"));
+}

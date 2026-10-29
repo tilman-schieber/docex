@@ -79,6 +79,7 @@ function leafText(n: PMNode): string {
   if (n.type === schema.nodes.hard_break) return " ";
   if (n.type === schema.nodes.image) return "[image]";
   if (n.type === schema.nodes.fnref) return `[${n.attrs.label}]`;
+  if (n.type === schema.nodes.math) return n.attrs.display ? `$$${n.attrs.latex}$$` : `$${n.attrs.latex}$`;
   return "";
 }
 

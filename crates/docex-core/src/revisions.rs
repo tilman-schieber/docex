@@ -98,7 +98,7 @@ fn excerpt(e: &Element, kind: ChangeKind) -> String {
         _ => {}
     }
     e.visit(&mut |x| match x.name.as_str() {
-        "w:t" | "w:delText" => s.push_str(&x.text_content()),
+        "w:t" | "w:delText" | "m:t" => s.push_str(&x.text_content()),
         "w:tab" => s.push(' '),
         "w:drawing" => s.push_str("[image]"),
         _ => {}

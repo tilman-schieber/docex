@@ -419,7 +419,7 @@ pub fn parse(src: &str) -> Vec<EBlock> {
 
 pub fn parse_full(src: &str) -> Parsed {
     let pre = critic_prepass(src);
-    let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_FOOTNOTES;
+    let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_FOOTNOTES | Options::ENABLE_MATH;
     let mut p = P {
         blocks: Vec::new(),
         para: None,
@@ -638,6 +638,8 @@ pub fn parse_full(src: &str) -> Parsed {
             Event::SoftBreak => p.push_text(" ", false),
             Event::HardBreak => p.push_obj("\n".into()),
             Event::FootnoteReference(l) => p.push_obj(format!("fn:{l}")),
+            Event::InlineMath(m) => p.push_obj(format!("math:{}", m.trim())),
+            Event::DisplayMath(m) => p.push_obj(format!("mathd:{}", m.split_whitespace().collect::<Vec<_>>().join(" "))),
             Event::InlineHtml(h) => {
                 let t = h.trim();
                 let lower = t.to_ascii_lowercase();

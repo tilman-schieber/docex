@@ -296,6 +296,12 @@ fn image_data(path: String) -> Result<String, String> {
     Ok(data_url(&path, &bytes))
 }
 
+/// Markdown (e.g. pasted text) as a document model fragment.
+#[tauri::command]
+fn md_to_model(md: String) -> DocModel {
+    docex_core::docmodel::from_markdown(&md)
+}
+
 #[tauri::command]
 fn get_author(state: tauri::State<AppState>) -> String {
     author_of(&state)
@@ -348,6 +354,7 @@ fn main() {
             save,
             image_data,
             theme,
+            md_to_model,
             get_author,
             set_author
         ])

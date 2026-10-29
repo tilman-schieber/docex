@@ -64,6 +64,8 @@ pub struct PatchCtx<'a> {
     pub note_refs: HashMap<String, String>,
     /// Labels of new footnotes actually referenced.
     pub used_notes: Vec<String>,
+    /// An equation was written (the part may need the math namespace).
+    pub math_added: bool,
 }
 
 /// State carried from one patching pass (text boxes, body, notes) to the next.
@@ -79,6 +81,7 @@ pub struct Carry {
     pub numbering_changed: bool,
     pub note_refs: HashMap<String, String>,
     pub used_notes: Vec<String>,
+    pub math_added: bool,
     pub max_image_emu: u64,
 }
 
@@ -108,6 +111,7 @@ impl<'a> PatchCtx<'a> {
             max_image_emu: c.max_image_emu,
             note_refs: c.note_refs,
             used_notes: c.used_notes,
+            math_added: c.math_added,
         }
     }
 
@@ -126,6 +130,7 @@ impl<'a> PatchCtx<'a> {
                 numbering_changed: self.numbering_changed,
                 note_refs: self.note_refs,
                 used_notes: self.used_notes,
+                math_added: self.math_added,
                 max_image_emu: self.max_image_emu,
             },
             self.rels_changed,
@@ -1151,6 +1156,17 @@ impl Builder<'_, '_> {
                         self.flush_text();
                         let n = deleted_node(&n, self.in_del());
                         self.run.as_mut().unwrap().1.children.push(n);
+                    }
+                    Content::NewObj(k) if k.starts_with("math:") || k.starts_with("mathd:") => {
+                        // Equations live at paragraph level, not inside a run.
+                        self.close_run();
+                        let (display, latex) = match k.strip_prefix("mathd:") {
+                            Some(l) => (true, l),
+                            None => (false, &k[5..]),
+                        };
+                        let el = crate::math::latex_to_omml(latex, display);
+                        self.container().push(el.into());
+                        self.cx.math_added = true;
                     }
                     Content::NewObj(k) if k.starts_with("fn:") && self.cx.note_refs.contains_key(&k[3..]) => {
                         // A reference to a new footnote: a superscript run of its own.
