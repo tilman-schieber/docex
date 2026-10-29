@@ -1,0 +1,220 @@
+use docex_core::render::View;
+use docex_core::{ApplyOpts, Docx};
+use std::io::{Read, Write};
+
+/// A docx whose body is `body`, built on the blank template.
+fn docx(body: &str) -> Docx {
+    let blank = docex_core::template::blank("2026-01-01T00:00:00Z").unwrap();
+    let mut zin = zip::ZipArchive::new(std::io::Cursor::new(blank)).unwrap();
+    let mut zout = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let opts = zip::write::SimpleFileOptions::default();
+    for i in 0..zin.len() {
+        let mut f = zin.by_index(i).unwrap();
+        let name = f.name().unwrap().to_string();
+        let mut data = String::new();
+        f.read_to_string(&mut data).unwrap();
+        if name == "word/document.xml" {
+            data = data.replace("<w:body>", &format!("<w:body>{body}"));
+        }
+        zout.start_file(name, opts).unwrap();
+        zout.write_all(data.as_bytes()).unwrap();
+    }
+    Docx::from_bytes(zout.finish().unwrap().into_inner()).unwrap()
+}
+
+fn opts(tracked: bool) -> ApplyOpts {
+    ApplyOpts { author: "Me".into(), date: "2026-10-29T00:00:00Z".into(), tracked, base_dir: None }
+}
+
+fn reopen(d: &mut Docx) -> Docx {
+    Docx::from_bytes(d.to_bytes().unwrap()).unwrap()
+}
+
+const WORDY: &str = r#"<w:p w14:paraId="1A2B3C4D" w:rsidR="00A1"><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Contract</w:t></w:r></w:p><w:p><w:r><w:rPr><w:color w:val="FF0000"/><w:sz w:val="28"/></w:rPr><w:t xml:space="preserve">The tenant pays </w:t></w:r><w:del w:id="1" w:author="Alice" w:date="2026-01-02T00:00:00Z"><w:r><w:delText>500</w:delText></w:r></w:del><w:ins w:id="2" w:author="Alice" w:date="2026-01-02T00:00:00Z"><w:r><w:t>600</w:t></w:r></w:ins><w:r><w:t xml:space="preserve"> euros </w:t></w:r><w:commentRangeStart w:id="0"/><w:r><w:t>per month</w:t></w:r><w:commentRangeEnd w:id="0"/><w:r><w:commentReference w:id="0"/></w:r><w:bookmarkStart w:id="0" w:name="pay"/><w:r><w:t>.</w:t></w:r><w:bookmarkEnd w:id="0"/></w:p><w:p><w:pPr><w:spacing w:after="0"/></w:pPr></w:p><w:p><w:r><w:t>Second clause stays.</w:t></w:r></w:p>"#;
+
+#[test]
+fn noop_is_byte_identical() {
+    let mut d = docx(WORDY);
+    let before = d.dom.to_xml();
+    let md = d.render(View::Review);
+    let r = d.apply(&md, &opts(true)).unwrap();
+    assert!(!r.changed(), "{r:?}");
+    assert!(!d.is_dirty());
+    assert_eq!(d.dom.to_xml(), before);
+}
+
+#[test]
+fn renders_others_changes() {
+    let d = docx(WORDY);
+    let md = d.render(View::Review);
+    assert!(md.contains("The tenant pays {--500--}{++600++} euros per month."), "{md}");
+    assert_eq!(d.render(View::Accepted).lines().nth(2), Some("The tenant pays 600 euros per month."));
+    assert_eq!(d.render(View::Original).lines().nth(2), Some("The tenant pays 500 euros per month."));
+}
+
+#[test]
+fn tracked_edit_keeps_formatting_and_others_changes() {
+    let mut d = docx(WORDY);
+    let md = d.render(View::Review).replace("tenant pays", "tenant always pays").replace("euros per month", "euros per calendar month").replace("Second clause stays.", "Second clause stays. Added.");
+    let r = d.apply(&md, &opts(true)).unwrap();
+    assert!(r.changed());
+    let xml = d.dom.to_xml();
+    // Alice's changes are untouched, our insertion is attributed to us.
+    assert!(xml.contains(r#"<w:del w:id="1" w:author="Alice""#));
+    assert!(xml.contains(r#"w:author="Me""#));
+    // The inserted word inherits the neighbouring run's direct formatting.
+    let ins = &xml[xml.find(r#"w:author="Me""#).unwrap()..];
+    assert!(ins[..400].contains(r#"<w:color w:val="FF0000"/>"#), "{}", &ins[..400]);
+    // Bookmark, comment anchors and the empty spacing paragraph survive.
+    assert!(xml.contains(r#"<w:bookmarkStart w:id="0" w:name="pay"/>"#));
+    assert!(xml.contains(r#"<w:commentRangeEnd w:id="0"/>"#));
+    assert!(xml.contains(r#"<w:p><w:pPr><w:spacing w:after="0"/></w:pPr></w:p>"#));
+    let mut d2 = reopen(&mut d);
+    let md2 = d2.render(View::Review);
+    assert!(md2.contains("euros per {++calendar ++}month"), "{md2}");
+    assert!(md2.contains("Second clause stays.{++ Added.++}"), "{md2}");
+    // Accepting everything yields the clean text.
+    d2.resolve_changes(&[], None, true).unwrap();
+    assert!(d2.changes().is_empty());
+    assert!(d2.render(View::Review).contains("The tenant always pays 600 euros per calendar month."));
+}
+
+#[test]
+fn untracked_edit_is_clean() {
+    let mut d = docx(WORDY);
+    let md = d.render(View::Review).replace("Second clause stays.", "Second clause changed.");
+    d.apply(&md, &opts(false)).unwrap();
+    let xml = d.dom.to_xml();
+    assert!(!xml.contains(r#"w:author="Me""#));
+    assert!(d.render(View::Review).contains("Second clause changed."));
+    // Alice's changes remain pending.
+    assert_eq!(d.changes().len(), 2);
+}
+
+#[test]
+fn deleting_own_insertion_removes_it() {
+    let mut d = docx(WORDY);
+    let md = d.render(View::Review).replace("Second clause stays.", "Second clause stays. Oops.");
+    d.apply(&md, &opts(true)).unwrap();
+    let mut d = reopen(&mut d);
+    let md = d.render(View::Review).replace("{++ Oops.++}", "");
+    d.apply(&md, &opts(true)).unwrap();
+    assert!(!d.dom.to_xml().contains("Oops"));
+}
+
+#[test]
+fn delete_and_insert_paragraphs_then_reject_restores() {
+    let mut d = docx(WORDY);
+    let original = d.render(View::Accepted);
+    let md = d.render(View::Review).replace("Second clause stays.", "- A new bullet\n\n## New heading");
+    d.apply(&md, &opts(true)).unwrap();
+    let mut d = reopen(&mut d);
+    let md = d.render(View::Review);
+    assert!(md.contains("{--Second clause stays.--}"), "{md}");
+    assert!(md.contains("- {++A new bullet++}"), "{md}");
+    assert!(md.contains("## {++New heading++}"), "{md}");
+    let mine: Vec<usize> = d.changes().iter().filter(|c| c.author == "Me").map(|c| c.n).collect();
+    d.resolve_changes(&mine, None, false).unwrap();
+    assert_eq!(d.render(View::Accepted), original);
+}
+
+#[test]
+fn heading_change_is_tracked_format() {
+    let mut d = docx(WORDY);
+    let md = d.render(View::Review).replace("# Contract", "## Contract");
+    let r = d.apply(&md, &opts(true)).unwrap();
+    assert_eq!(r.stats.kind_changes, 1);
+    let xml = d.dom.to_xml();
+    assert!(xml.contains(r#"<w:pStyle w:val="Heading2"/>"#));
+    assert!(xml.contains("w:pPrChange"));
+    let mut d = reopen(&mut d);
+    d.resolve_changes(&[], Some("Me"), false).unwrap();
+    assert!(d.render(View::Review).contains("# Contract\n"));
+    assert!(d.dom.to_xml().contains(r#"<w:pStyle w:val="Heading1"/>"#));
+}
+
+#[test]
+fn bold_toggle_is_format_change() {
+    let mut d = docx(WORDY);
+    let md = d.render(View::Review).replace("Second clause stays.", "Second **clause** stays.");
+    let r = d.apply(&md, &opts(true)).unwrap();
+    assert!(r.stats.formats > 0 && r.stats.insertions == 0, "{r:?}");
+    let mut d = reopen(&mut d);
+    assert!(d.render(View::Review).contains("Second **clause** stays."));
+    assert_eq!(d.changes()[d.changes().len() - 1].kind, docex_core::revisions::ChangeKind::Format);
+}
+
+#[test]
+fn comments_from_markdown_and_cli() {
+    let mut d = docx(WORDY);
+    let md = d.render(View::Review).replace("Second clause", "{==Second clause==}{>>Why?<<}");
+    let r = d.apply(&md, &opts(true)).unwrap();
+    assert_eq!(r.comments_added, 1);
+    let mut d = reopen(&mut d);
+    assert!(d.render(View::Review).contains("{==Second clause==}{>>Me: Why?<<}"));
+    let id = d.add_comment("tenant", "Who exactly?", "Me", "2026-10-29T00:00:00Z").unwrap();
+    d.reply_comment(&id, "The lessee.", "Bob", "2026-10-29T00:00:00Z").unwrap();
+    d.set_comment_done(&id, true).unwrap();
+    let mut d = reopen(&mut d);
+    let list = d.comment_list();
+    let c = list.iter().find(|c| c.id == id).unwrap();
+    assert_eq!((c.anchor.as_str(), c.done), ("tenant", true));
+    assert!(list.iter().any(|c| c.parent.as_deref() == Some(id.as_str()) && c.author == "Bob"));
+    // Re-applying the rendered text must not duplicate comments.
+    let md = d.render(View::Review);
+    let r = d.apply(&md, &opts(true)).unwrap();
+    assert!(!r.changed(), "{r:?}");
+}
+
+#[test]
+fn track_setting_roundtrip() {
+    let mut d = docx(WORDY);
+    assert!(!d.track_changes().unwrap());
+    d.set_track_changes(true).unwrap();
+    let mut d = reopen(&mut d);
+    assert!(d.track_changes().unwrap());
+    d.set_track_changes(false).unwrap();
+    let d = reopen(&mut d);
+    assert!(!d.track_changes().unwrap());
+}
+
+#[test]
+fn tricky_text_roundtrips() {
+    let tricky = [
+        "1. not a list", "# not a heading", "- not a bullet", "a * b _c_ `d` [e] &lt;f&gt; ~g~ \\h",
+        "{++ not critic ++}", "AT&amp;T &amp;copy;", "> not a quote", "x | y", "  leading spaces", "trailing   ",
+        "under_score_word _start", "++} --} a~>b", "+ plus", "=== setext?",
+    ];
+    let body: String = tricky
+        .iter()
+        .map(|t| format!(r#"<w:p><w:r><w:t xml:space="preserve">{t}</w:t></w:r></w:p>"#))
+        .collect();
+    let mut d = docx(&body);
+    let before = d.dom.to_xml();
+    let md = d.render(View::Review);
+    let r = d.apply(&md, &opts(true)).unwrap();
+    assert!(!r.changed(), "{md}\n{r:?}");
+    assert_eq!(d.dom.to_xml(), before);
+    // Each line reads back as its own literal text.
+    let blocks = docex_core::mdparse::parse(&md);
+    let texts: Vec<String> = blocks.iter().map(|b| b.text()).collect();
+    for t in tricky {
+        let t = docex_core::xml::unescape(t);
+        assert!(texts.contains(&t.trim().to_string()), "{t:?} not in {texts:?}");
+    }
+}
+
+#[test]
+fn new_document_from_markdown() {
+    let md = "# Title\n\nSome *text* with a [link](https://x.org).\n\n- a\n- b\n  - c\n\n1. one\n2. two\n\n| A | B |\n|---|---|\n| 1 | 2 |\n";
+    let (mut d, r) = Docx::new_from_markdown(md, None, "Me", std::path::Path::new(".")).unwrap();
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    let d = reopen(&mut d);
+    assert!(d.changes().is_empty());
+    let out = d.render(View::Review);
+    assert!(out.contains("# Title"));
+    assert!(out.contains("Some *text* with a [link](https://x.org)."));
+    assert!(out.contains("- a\n- b\n  - c"), "{out}");
+    assert!(out.contains("1. one\n1. two"), "{out}");
+    assert!(out.contains("| **1** | **2** |") || out.contains("| 1 | 2 |"), "{out}");
+}
