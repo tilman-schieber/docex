@@ -135,6 +135,22 @@ fn critic_prepass(src: &str) -> String {
             }
             continue;
         }
+        // Review id markers from `docex cat --ids` (`⟦c12⟧`) are not text.
+        if c == '⟦' {
+            if let Some(end) = rest.find('⟧') {
+                let inner = &rest[c.len_utf8()..end];
+                let mut ch = inner.chars();
+                if matches!(ch.next(), Some('c' | 'f' | 'e' | 'm')) && !ch.as_str().is_empty() && ch.as_str().chars().all(|d| d.is_ascii_digit()) {
+                    while let Some((j, _)) = it.peek() {
+                        if *j >= i + end + '⟧'.len_utf8() {
+                            break;
+                        }
+                        it.next();
+                    }
+                    continue;
+                }
+            }
+        }
         let mut take = |tok: &str, sent: char, out: &mut String| {
             out.push(sent);
             for _ in 1..tok.chars().count() {

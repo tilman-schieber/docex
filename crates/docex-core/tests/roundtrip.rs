@@ -387,3 +387,46 @@ fn equations_roundtrip_and_track() {
     assert!(xml.contains("<m:oMathPara><m:oMath><m:f>"), "{xml}");
     assert!(d.render(View::Review).contains("$$\\frac{a}{b}$$"));
 }
+
+#[test]
+fn review_ids_are_stable_and_resolve_together() {
+    let mut d = docx(WORDY);
+    // Two more changes by Me: an insertion and a replacement.
+    let md = d.render(View::Review).replace("Second clause stays.", "Second clause remains. Added.");
+    d.apply(&md, &opts(true)).unwrap();
+    let mut d = reopen(&mut d);
+    let rv = d.review();
+    let alice: Vec<&docex_core::review::Item> = rv.items.iter().filter(|i| i.author == "Alice").collect();
+    // Alice's "500" -> "600" reads as one replacement.
+    assert_eq!(alice.len(), 1, "{:?}", rv.items);
+    assert_eq!((alice[0].kind.as_str(), alice[0].old.as_deref(), alice[0].new.as_deref()), ("replace", Some("500"), Some("600")));
+    assert_eq!(alice[0].section, vec!["Contract".to_string()]);
+    assert!(alice[0].before.ends_with("pays "), "{:?}", alice[0]);
+    let mine: Vec<String> = rv.items.iter().filter(|i| i.author == "Me").map(|i| i.id.clone()).collect();
+    assert!(!mine.is_empty());
+    // Accept Alice, reject mine, in one call; order of decisions doesn't matter.
+    let (a, r) = d.resolve_ids(&[alice[0].id.clone()], &mine).unwrap();
+    assert!(a >= 1 && r >= 1);
+    assert!(d.changes().is_empty());
+    let md = d.render(View::Review);
+    assert!(md.contains("pays 600 euros") && md.contains("Second clause stays."), "{md}");
+    // Unknown ids are refused before anything changes.
+    assert!(d.resolve_ids(&["c999".into()], &[]).is_err());
+}
+
+#[test]
+fn ids_view_reapplies_as_noop_and_comments_need_unique_quotes() {
+    let mut d = docx(WORDY);
+    let before = d.dom.to_xml();
+    let md = d.render_with_ids();
+    assert!(md.contains("{--500--}⟦c1⟧{++600++}⟦c2⟧"), "{md}");
+    assert!(!d.apply(&md, &opts(true)).unwrap().changed());
+    assert_eq!(d.dom.to_xml(), before);
+    // "e" occurs many times: refuse, then place exactly with nth / section.
+    let err = d.add_comment_at("e", None, None, "x", "Me", "2026-01-01T00:00:00Z").unwrap_err().to_string();
+    assert!(err.contains("occurs") && err.contains("--nth"), "{err}");
+    let id = d.add_comment_at("clause", None, Some("Contract"), "why?", "Me", "2026-01-01T00:00:00Z").unwrap();
+    let d = reopen(&mut d);
+    let c = d.comment_list().into_iter().find(|c| c.id == id).unwrap();
+    assert_eq!(c.anchor, "clause");
+}

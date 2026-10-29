@@ -21,6 +21,10 @@ pub struct RenderCtx<'a> {
     /// Comment ids that have a `commentRangeEnd` somewhere in the document.
     pub ranged: HashSet<String>,
     pub notes: &'a [Note],
+    /// Show review ids after changes and comments (`⟦c12⟧`, `⟦m3⟧`).
+    pub ids: bool,
+    /// Id prefix of the part being rendered: c (body), f / e (notes).
+    pub id_prefix: std::cell::Cell<&'static str>,
     pub boxes: &'a [TextBox],
 }
 
@@ -45,7 +49,7 @@ struct Mode {
 }
 
 enum Tok {
-    Atom { key: String, st: Status, link: Option<String>, marks: Marks, alt: String },
+    Atom { key: String, st: Status, link: Option<String>, marks: Marks, alt: String, wid: Option<String> },
     Marker(String),
 }
 
@@ -173,6 +177,7 @@ pub fn render(blocks: &[Block], cx: &RenderCtx) -> Rendered {
     let mut note_map = Vec::new();
     let referenced: Vec<&Note> = cx.notes.iter().filter(|n| out.contains(&format!("[^{}]", n.label))).collect();
     for n in referenced {
+        cx.id_prefix.set(if n.label.starts_with('e') { "e" } else { "f" });
         sep(&mut out, false);
         out.push_str(&format!("[^{}]: ", n.label));
         let mut used = Vec::new();
@@ -306,6 +311,9 @@ fn comment_markers(id: &str, cx: &RenderCtx) -> String {
     for r in cx.comments.replies(id) {
         one(r, true);
     }
+    if cx.ids {
+        s.push_str(&format!("⟦m{id}⟧"));
+    }
     s
 }
 
@@ -372,6 +380,17 @@ fn inline(p: &Para, mode: Mode, cx: &RenderCtx) -> Option<String> {
                     link: if mode.code { None } else { p.link(it).map(String::from) },
                     marks: if mode.code { Marks::default() } else { p.marks(it) },
                     alt,
+                    wid: if cx.ids && st != Status::Plain {
+                        it.ctx
+                            .iter()
+                            .rev()
+                            .map(|w| &p.wraps[*w])
+                            .find(|w| matches!(w.kind, crate::model::WrapKind::Ins | crate::model::WrapKind::Del))
+                            .and_then(|w| w.shell.attr("w:id"))
+                            .map(String::from)
+                    } else {
+                        None
+                    },
                 });
             }
         }
@@ -386,7 +405,7 @@ fn inline(p: &Para, mode: Mode, cx: &RenderCtx) -> Option<String> {
         .filter(|(i, t)| (*i >= first && *i <= last) || matches!(t, Tok::Marker(_)))
         .map(|(_, t)| t)
         .collect();
-    let mut w = Writer { out: String::new(), mode, st: Status::Plain, link: None };
+    let mut w = Writer { out: String::new(), mode, st: Status::Plain, link: None, wid: None, wid_next: None, ids: cx.ids.then(|| cx.id_prefix.get()) };
     let mut i = 0;
     while i < toks.len() {
         match &toks[i] {
@@ -394,22 +413,24 @@ fn inline(p: &Para, mode: Mode, cx: &RenderCtx) -> Option<String> {
                 w.out.push_str(m);
                 i += 1;
             }
-            Tok::Atom { st, link, marks, .. } => {
+            Tok::Atom { st, link, marks, wid, .. } => {
                 let mut j = i;
                 let mut seg = Vec::new();
-                while let Some(Tok::Atom { key, st: s2, link: l2, marks: m2, alt }) = toks.get(j) {
-                    if s2 != st || l2 != link || m2 != marks {
+                while let Some(Tok::Atom { key, st: s2, link: l2, marks: m2, alt, wid: w2 }) = toks.get(j) {
+                    if s2 != st || l2 != link || m2 != marks || w2 != wid {
                         break;
                     }
                     seg.push((key.as_str(), alt.as_str()));
                     j += 1;
                 }
+                w.wid_next = wid.clone();
                 w.segment(*st, link.clone(), *marks, &seg);
                 i = j;
             }
         }
     }
     w.set_link(None);
+    w.wid_next = None;
     w.set_status(Status::Plain);
     Some(w.out)
 }
@@ -419,6 +440,11 @@ struct Writer {
     mode: Mode,
     st: Status,
     link: Option<String>,
+    /// Word id of the open change, and of the segment about to be written.
+    wid: Option<String>,
+    wid_next: Option<String>,
+    /// Id prefix when review ids are shown.
+    ids: Option<&'static str>,
 }
 
 impl Writer {
@@ -438,7 +464,7 @@ impl Writer {
     }
 
     fn set_status(&mut self, st: Status) {
-        if self.st == st {
+        if self.st == st && (self.ids.is_none() || self.wid == self.wid_next) {
             return;
         }
         // Links never span a change boundary; the caller reopens them.
@@ -448,6 +474,10 @@ impl Writer {
             Status::Del => self.out.push_str("--}"),
             Status::Plain => {}
         }
+        if let (Some(prefix), Some(w), false) = (self.ids, &self.wid, self.st == Status::Plain) {
+            self.out.push_str(&format!("⟦{prefix}{w}⟧"));
+        }
+        self.wid = self.wid_next.clone();
         match st {
             Status::Ins => self.out.push_str("{++"),
             Status::Del => self.out.push_str("{--"),
@@ -457,9 +487,7 @@ impl Writer {
     }
 
     fn segment(&mut self, st: Status, link: Option<String>, marks: Marks, seg: &[(&str, &str)]) {
-        if self.st != st {
-            self.set_status(st);
-        }
+        self.set_status(st);
         self.set_link(link);
         let is_ws = |k: &str| k.chars().all(char::is_whitespace);
         let lead = seg.iter().take_while(|(k, _)| is_ws(k)).count();

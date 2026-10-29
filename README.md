@@ -9,12 +9,14 @@ docex cat report.docx                 # Markdown, with changes and comments as C
 docex edit report.docx                # opens $EDITOR; saves your edits back into the .docx
 docex apply report.docx edited.md     # same, from a file (or - for stdin), e.g. written by an agent
 docex track report.docx on|off        # Word's "Track Changes" switch
-docex changes report.docx             # numbered list of tracked changes
-docex accept report.docx 3 5          # or --all, or --by "Alice"
-docex reject report.docx --by Bob
+docex review report.docx              # every change and comment thread: stable id, section, context
+docex review report.docx --json --by Alice --in "Results"
+docex resolve report.docx --accept c4,c9 --reject c7   # all decisions at once, ids never shift
+docex accept report.docx --by "Alice" # or --all; reject works the same way
+docex cat report.docx --ids           # the document with ⟦c12⟧ / ⟦m3⟧ after each change and comment
 docex comments report.docx
-docex comment report.docx --on "quoted text" "Please check this"
-docex comment report.docx --reply 4 "Done"   # also --resolve / --reopen / --delete ID
+docex comment report.docx --on "quoted text" "Please check this"   # refuses ambiguous quotes; --nth N, --in SECTION
+docex comment report.docx --reply m4 "Done"  # also --resolve / --reopen / --delete m4
 docex new notes.md -o notes.docx [--template corporate.docx]
 docex diff a.docx b.docx              # content diff; --into writes B onto A as changes
 ```

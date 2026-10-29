@@ -9,6 +9,7 @@ pub mod model;
 pub mod package;
 pub mod patch;
 pub mod render;
+pub mod review;
 pub mod revisions;
 pub mod styles;
 pub mod template;
@@ -235,7 +236,7 @@ impl Docx {
                 });
             }
         }
-        RenderCtx { view, comments: &self.comments, ranged, notes, boxes }
+        RenderCtx { view, comments: &self.comments, ranged, notes, boxes, ids: false, id_prefix: std::cell::Cell::new("c") }
     }
 
     fn render_full(&self, view: View) -> render::Rendered {
@@ -245,6 +246,16 @@ impl Docx {
 
     pub fn render(&self, view: View) -> String {
         self.render_full(view).md
+    }
+
+    /// The review view with ids after each change and comment (`⟦c12⟧`,
+    /// `⟦m3⟧`), as used by `docex review` / `resolve`. The markers are
+    /// ignored when the text is applied.
+    pub fn render_with_ids(&self) -> String {
+        let (blocks, notes, boxes) = (self.blocks(), self.notes(), self.text_boxes());
+        let mut cx = self.render_ctx(View::Review, &notes, &boxes);
+        cx.ids = true;
+        render::render(&blocks, &cx).md
     }
 
     /// Usable text width of the (last) section, in EMU.
@@ -690,24 +701,54 @@ impl Docx {
             .collect()
     }
 
-    /// Anchor a new comment on `quote` (first occurrence, within one paragraph).
-    pub fn add_comment(&mut self, quote: &str, text: &str, author: &str, date: &str) -> Result<String> {
+    /// Anchor a new comment on `quote` (within one paragraph).
+    ///
+    /// If the quote occurs more than once, `nth` (1-based) picks one;
+    /// without it the call fails and lists the matches, so a comment never
+    /// lands on the wrong passage. `within` restricts the search to sections
+    /// whose heading path contains that text.
+    pub fn add_comment_at(&mut self, quote: &str, nth: Option<usize>, within: Option<&str>, text: &str, author: &str, date: &str) -> Result<String> {
+        if quote.is_empty() {
+            bail!("empty quote");
+        }
         let blocks = self.blocks();
-        let mut paras: Vec<&model::Para> = Vec::new();
+        // Paragraphs with their section path.
+        let mut paras: Vec<(&model::Para, String)> = Vec::new();
+        let mut path: Vec<(u8, String)> = Vec::new();
         for b in &blocks {
             match b {
-                Block::Para(p) => paras.push(p),
+                Block::Para(p) => {
+                    if let styles::Kind::Heading(l) = p.kind {
+                        path.retain(|(lv, _)| *lv < l);
+                        path.push((l, render::view_text(p, View::Accepted)));
+                    }
+                    paras.push((p, path.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join(" › ")));
+                }
                 Block::Table(t) => {
+                    let sec = path.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join(" › ");
                     for r in &t.rows {
                         for c in &r.cells {
-                            paras.extend(c.paras.iter());
+                            paras.extend(c.paras.iter().map(|p| (p, sec.clone())));
                         }
                     }
                 }
                 _ => {}
             }
         }
-        for p in paras {
+        struct Hit<'a> {
+            p: &'a model::Para,
+            section: String,
+            si: usize,
+            ei: usize,
+            context: String,
+        }
+        let mut hits: Vec<Hit> = Vec::new();
+        for (p, section) in &paras {
+            if let Some(w) = within {
+                if !section.to_lowercase().contains(&w.to_lowercase()) {
+                    continue;
+                }
+            }
             let chars: Vec<(usize, char)> = p
                 .visible()
                 .filter(|(_, i)| p.status(i) != model::Status::Del)
@@ -718,28 +759,97 @@ impl Docx {
                 })
                 .collect();
             let s: String = chars.iter().map(|(_, c)| *c).collect();
-            if let Some(pos) = s.find(quote) {
+            for (pos, _) in s.match_indices(quote) {
                 let start = s[..pos].chars().count();
                 let end = start + quote.chars().count();
-                if end == start {
-                    bail!("empty quote");
-                }
-                let (si, ei) = (chars[start].0, chars[end - 1].0 + 1);
-                let id = self.comments.next_id(&self.dom.root);
-                let opts = Opts { author: author.to_string(), date: date.to_string(), tracked: false, base_dir: None };
-                let mut numbering = None;
-                let carry = Carry { next_comment_id: id, ..Default::default() };
-                let mut cx = PatchCtx::new(&opts, &self.styles, &mut self.rels, &mut numbering, &[], carry);
-                let node = patch::comment_on_items(p, si, ei, text, &mut cx);
-                let path = p.path.clone();
-                self.replace_para(&path, node);
-                self.comments.add(&mut self.pkg, &mut self.rels, id, author, date, text, None)?;
-                self.dirty.comments = true;
-                self.dirty.rels = true;
-                return Ok(id.to_string());
+                let from = start.saturating_sub(30);
+                let ctx: String = s.chars().skip(from).take(end - from + 30).collect();
+                hits.push(Hit { p, section: section.clone(), si: chars[start].0, ei: chars[end - 1].0 + 1, context: ctx });
             }
         }
-        bail!("text not found in a single paragraph: {quote:?}")
+        let hit = match (hits.len(), nth) {
+            (0, _) => bail!("text not found in a single paragraph{}: {quote:?}", within.map(|w| format!(" under \"{w}\"")).unwrap_or_default()),
+            (n, Some(k)) if k == 0 || k > n => bail!("--nth {k}: there are {n} matches"),
+            (_, Some(k)) => &hits[k - 1],
+            (1, None) => &hits[0],
+            (n, None) => {
+                let list: Vec<String> = hits
+                    .iter()
+                    .enumerate()
+                    .take(20)
+                    .map(|(i, h)| format!("  {}. {}…{}…", i + 1, if h.section.is_empty() { String::new() } else { format!("§ {}: ", h.section) }, h.context.replace('\n', " ")))
+                    .collect();
+                bail!("{quote:?} occurs {n} times; pick one with --nth N (or narrow with --in SECTION):\n{}", list.join("\n"))
+            }
+        };
+        let (si, ei) = (hit.si, hit.ei);
+        let id = self.comments.next_id(&self.dom.root);
+        let opts = Opts { author: author.to_string(), date: date.to_string(), tracked: false, base_dir: None };
+        let mut numbering = None;
+        let carry = Carry { next_comment_id: id, ..Default::default() };
+        let mut cx = PatchCtx::new(&opts, &self.styles, &mut self.rels, &mut numbering, &[], carry);
+        let node = patch::comment_on_items(hit.p, si, ei, text, &mut cx);
+        let path = hit.p.path.clone();
+        self.replace_para(&path, node);
+        self.comments.add(&mut self.pkg, &mut self.rels, id, author, date, text, None)?;
+        self.dirty.comments = true;
+        self.dirty.rels = true;
+        Ok(id.to_string())
+    }
+
+    /// Anchor a new comment on the only occurrence of `quote`.
+    pub fn add_comment(&mut self, quote: &str, text: &str, author: &str, date: &str) -> Result<String> {
+        self.add_comment_at(quote, None, None, text, author, date)
+    }
+
+    /// Every tracked change and comment thread, with stable ids and context.
+    pub fn review(&self) -> review::Review {
+        review::build(&self.model(), &self.changes(), &self.comment_list())
+    }
+
+    /// Accept and reject by review id (`c12`, `f3`, ...) in one go. Ids are
+    /// Word's own, so the order of decisions doesn't matter.
+    pub fn resolve_ids(&mut self, accept: &[String], reject: &[String]) -> Result<(usize, usize)> {
+        let rv = self.review();
+        let mut plan: Vec<(bool, String, Vec<String>)> = Vec::new();
+        let mut unknown = Vec::new();
+        for (yes, ids) in [(true, accept), (false, reject)] {
+            for id in ids {
+                match rv.find(id) {
+                    Some(it) if it.kind == "comment" => bail!("{id} is a comment; use `docex comment --resolve`"),
+                    Some(it) => {
+                        if plan.iter().any(|(y, i, _)| *y != yes && *i == it.id) {
+                            bail!("{id} is both accepted and rejected");
+                        }
+                        plan.push((yes, it.id.clone(), it.wids.iter().map(|w| format!("{}:{w}", it.part)).collect()));
+                    }
+                    None => unknown.push(id.clone()),
+                }
+            }
+        }
+        if !unknown.is_empty() {
+            bail!("unknown id(s): {} (see `docex review`)", unknown.join(", "));
+        }
+        let mut counts = (0, 0);
+        for yes in [true, false] {
+            let keys: Vec<String> = plan.iter().filter(|(y, _, _)| *y == yes).flat_map(|(_, _, k)| k.clone()).collect();
+            if keys.is_empty() {
+                continue;
+            }
+            let ns: Vec<usize> = self
+                .changes()
+                .iter()
+                .filter(|c| c.wids.iter().any(|w| keys.contains(&format!("{}:{w}", c.part))))
+                .map(|c| c.n)
+                .collect();
+            let n = if ns.is_empty() { 0 } else { self.resolve_changes(&ns, None, yes)? };
+            if yes {
+                counts.0 = n;
+            } else {
+                counts.1 = n;
+            }
+        }
+        Ok(counts)
     }
 
     fn replace_para(&mut self, path: &[usize], node: Node) {

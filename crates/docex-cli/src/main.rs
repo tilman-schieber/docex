@@ -32,6 +32,41 @@ enum Cmd {
         /// Blocks as JSON (id, kind, text).
         #[arg(long)]
         json: bool,
+        /// Mark every change and comment with its review id (⟦c12⟧, ⟦m3⟧).
+        /// The markers are ignored if the text is applied.
+        #[arg(long)]
+        ids: bool,
+    },
+    /// Every tracked change and comment thread with a stable id, its
+    /// section and surrounding text: the list to review from.
+    Review {
+        file: PathBuf,
+        #[arg(long)]
+        json: bool,
+        /// Only this person's changes and comments.
+        #[arg(long)]
+        by: Option<String>,
+        /// Only items of this kind: insert, delete, replace, format, comment, change.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Only items in sections whose heading path contains this text.
+        #[arg(long = "in", value_name = "SECTION")]
+        within: Option<String>,
+        /// Only unresolved comment threads.
+        #[arg(long)]
+        open: bool,
+    },
+    /// Accept and reject changes by review id in one go (ids don't shift).
+    Resolve {
+        file: PathBuf,
+        /// Review ids to accept (from `docex review`), comma or space separated.
+        #[arg(long, num_args = 1.., value_delimiter = ',')]
+        accept: Vec<String>,
+        /// Review ids to reject.
+        #[arg(long, num_args = 1.., value_delimiter = ',')]
+        reject: Vec<String>,
+        #[command(flatten)]
+        out: OutArgs,
     },
     /// Edit the document in $EDITOR; changes are saved as tracked changes.
     Edit {
@@ -52,11 +87,11 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Accept tracked changes (all, by number, or by author).
+    /// Accept tracked changes (all, by review id or number, or by author).
     Accept {
         file: PathBuf,
-        /// Change numbers from `docex changes`.
-        ids: Vec<usize>,
+        /// Review ids (c12, from `docex review`) or numbers from `docex changes`.
+        ids: Vec<String>,
         #[arg(long)]
         all: bool,
         #[arg(long)]
@@ -64,10 +99,10 @@ enum Cmd {
         #[command(flatten)]
         out: OutArgs,
     },
-    /// Reject tracked changes (all, by number, or by author).
+    /// Reject tracked changes (all, by review id or number, or by author).
     Reject {
         file: PathBuf,
-        ids: Vec<usize>,
+        ids: Vec<String>,
         #[arg(long)]
         all: bool,
         #[arg(long)]
@@ -86,9 +121,16 @@ enum Cmd {
         file: PathBuf,
         /// Comment text.
         text: Option<String>,
-        /// Anchor the new comment on this exact text (first occurrence).
+        /// Anchor the new comment on this exact text. Fails if it occurs more
+        /// than once, unless --nth or --in narrows it to one.
         #[arg(long, value_name = "QUOTE")]
         on: Option<String>,
+        /// Which occurrence of the quote (1-based).
+        #[arg(long)]
+        nth: Option<usize>,
+        /// Only look in sections whose heading path contains this text.
+        #[arg(long = "in", value_name = "SECTION")]
+        within: Option<String>,
         /// Reply to comment ID.
         #[arg(long, value_name = "ID")]
         reply: Option<String>,
@@ -264,9 +306,14 @@ fn apply_and_save(doc: &mut Docx, file: &Path, md: &str, base: &Path, w: &WriteA
 }
 
 fn main() -> Result<()> {
+    // Exit quietly when output is piped into `head` and the like.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Cat { file, accepted, original, media, json } => {
+        Cmd::Cat { file, accepted, original, media, json, ids } => {
             let doc = Docx::open(&file)?;
             let view = if accepted { View::Accepted } else if original { View::Original } else { View::Review };
             if let Some(dir) = media {
@@ -275,8 +322,40 @@ fn main() -> Result<()> {
             }
             if json {
                 println!("{}", serde_json::to_string_pretty(&blocks_json(&doc, view))?);
+            } else if ids {
+                print!("{}", doc.render_with_ids());
             } else {
                 print!("{}", doc.render(view));
+            }
+        }
+        Cmd::Review { file, json, by, kind, within, open } => {
+            let doc = Docx::open(&file)?;
+            let mut rv = doc.review();
+            let total = rv.items.len();
+            rv.items.retain(|i| {
+                by.as_deref().is_none_or(|b| i.author.to_lowercase().contains(&b.to_lowercase()))
+                    && kind.as_deref().is_none_or(|k| i.kind == k || (k == "change" && i.kind != "comment"))
+                    && within.as_deref().is_none_or(|w| i.section.join(" › ").to_lowercase().contains(&w.to_lowercase()))
+                    && (!open || (i.kind == "comment" && !i.resolved))
+            });
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rv)?);
+            } else {
+                print_review(&rv);
+                if rv.items.len() != total {
+                    println!("\n(showing {} of {total} items)", rv.items.len());
+                }
+            }
+        }
+        Cmd::Resolve { file, accept, reject, out } => {
+            if accept.is_empty() && reject.is_empty() {
+                bail!("give --accept and/or --reject with ids from `docex review`");
+            }
+            let mut doc = Docx::open(&file)?;
+            let (a, r) = doc.resolve_ids(&accept, &reject)?;
+            eprintln!("{a} accepted, {r} rejected");
+            if a + r > 0 {
+                save(&mut doc, &file, &out)?;
             }
         }
         Cmd::Edit { file, w } => {
@@ -357,8 +436,10 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::Comment { file, text, on, reply, resolve, reopen, delete, author: a, out } => {
+        Cmd::Comment { file, text, on, nth, within, reply, resolve, reopen, delete, author: a, out } => {
             let mut doc = Docx::open(&file)?;
+            let cid = |s: String| s.trim_start_matches('m').to_string();
+            let (resolve, reopen, delete, reply) = (resolve.map(cid), reopen.map(cid), delete.map(cid), reply.map(cid));
             let who = author(a.as_deref());
             let date = now_iso();
             if let Some(id) = resolve {
@@ -376,8 +457,8 @@ fn main() -> Result<()> {
                 eprintln!("reply {id} added to comment {parent}");
             } else if let Some(quote) = on {
                 let Some(text) = text else { bail!("comment text missing") };
-                let id = doc.add_comment(&quote, &text, &who, &date)?;
-                eprintln!("comment {id} added");
+                let id = doc.add_comment_at(&quote, nth, within.as_deref(), &text, &who, &date)?;
+                eprintln!("comment m{id} added");
             } else {
                 bail!("use --on QUOTE TEXT, --reply ID TEXT, --resolve ID, --reopen ID or --delete ID");
             }
@@ -425,14 +506,78 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn resolve(file: &Path, ids: &[usize], by: Option<&str>, accept: bool, out: &OutArgs) -> Result<()> {
+fn resolve(file: &Path, ids: &[String], by: Option<&str>, accept: bool, out: &OutArgs) -> Result<()> {
     let mut doc = Docx::open(file)?;
-    let n = doc.resolve_changes(ids, by, accept)?;
+    let (nums, rids): (Vec<&String>, Vec<&String>) = ids.iter().partition(|i| i.chars().all(|c| c.is_ascii_digit()));
+    if !nums.is_empty() && !rids.is_empty() {
+        bail!("mix of change numbers and review ids; use one kind");
+    }
+    let n = if !rids.is_empty() {
+        let rids: Vec<String> = rids.into_iter().cloned().collect();
+        let (a, r) = if accept { doc.resolve_ids(&rids, &[])? } else { doc.resolve_ids(&[], &rids)? };
+        a + r
+    } else {
+        let nums: Vec<usize> = nums.iter().map(|n| n.parse().unwrap()).collect();
+        doc.resolve_changes(&nums, by, accept)?
+    };
     eprintln!("{n} changes {}", if accept { "accepted" } else { "rejected" });
     if n > 0 {
         save(&mut doc, file, out)?;
     }
     Ok(())
+}
+
+fn print_review(rv: &docex_core::review::Review) {
+    let s = &rv.summary;
+    println!("{} changes · {} comment threads ({} open)", s.changes, s.threads, s.open_threads);
+    for p in &s.people {
+        let mut parts = Vec::new();
+        for (n, one, many) in [
+            (p.inserts, "insertion", "insertions"),
+            (p.deletes, "deletion", "deletions"),
+            (p.replaces, "replacement", "replacements"),
+            (p.other, "other change", "other changes"),
+            (p.comments, "comment", "comments"),
+            (p.replies, "reply", "replies"),
+        ] {
+            if n > 0 {
+                parts.push(format!("{n} {}", if n == 1 { one } else { many }));
+            }
+        }
+        println!("  {:<24} {}", trunc(&p.name, 24), parts.join(", "));
+    }
+    let mut section: Option<Vec<String>> = None;
+    for it in &rv.items {
+        if section.as_ref() != Some(&it.section) {
+            println!("\n§ {}", if it.section.is_empty() { "(start)".into() } else { it.section.join(" › ") });
+            section = Some(it.section.clone());
+        }
+        let date = it.date.get(..10).unwrap_or("");
+        let what = it.label.clone().unwrap_or_else(|| it.kind.clone());
+        let state = if it.kind == "comment" { if it.resolved { " (resolved)" } else { " (open)" } } else { "" };
+        println!("  {:<6} {} · {} · {}{}", it.id, it.author, date, what, state);
+        if it.kind == "comment" {
+            if let Some(a) = &it.anchor {
+                println!("         on \"{}\"", trunc(&a.replace('\n', " "), 80));
+            }
+            println!("         {}", it.text.as_deref().unwrap_or("").replace('\n', "\n         "));
+            for r in &it.replies {
+                println!("         ↳ {} ({}): {}", r.author, r.id, r.text.replace('\n', " "));
+            }
+        } else if it.old.is_some() || it.new.is_some() {
+            let mut line = it.before.clone();
+            if let Some(o) = &it.old {
+                line.push_str(&format!("[-{o}-]"));
+            }
+            if let Some(n) = &it.new {
+                line.push_str(&format!("{{+{n}+}}"));
+            }
+            line.push_str(&it.after);
+            println!("         {}", line.replace('\n', " "));
+        } else if let Some(t) = &it.text {
+            println!("         {}", trunc(t, 100));
+        }
+    }
 }
 
 fn trunc(s: &str, n: usize) -> String {
