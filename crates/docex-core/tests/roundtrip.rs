@@ -23,7 +23,7 @@ fn docx(body: &str) -> Docx {
 }
 
 fn opts(tracked: bool) -> ApplyOpts {
-    ApplyOpts { author: "Me".into(), date: "2026-10-29T00:00:00Z".into(), tracked, base_dir: None }
+    ApplyOpts { author: "Me".into(), date: "2026-10-29T00:00:00Z".into(), tracked, base_dir: None, keep_opaque: false }
 }
 
 fn reopen(d: &mut Docx) -> Docx {
@@ -429,4 +429,150 @@ fn ids_view_reapplies_as_noop_and_comments_need_unique_quotes() {
     let d = reopen(&mut d);
     let c = d.comment_list().into_iter().find(|c| c.id == id).unwrap();
     assert_eq!(c.anchor, "clause");
+}
+
+// ---------------------------------------------------------------------------
+// Regressions from the code review
+
+const D: &str = r#"w:author="Alice" w:date="2026-01-01T00:00:00Z""#;
+
+#[test]
+fn reject_style_and_mark_format_together_does_not_panic() {
+    let body = format!(
+        r#"<w:p><w:pPr><w:pStyle w:val="Heading1"/><w:rPr><w:b/><w:rPrChange w:id="1" {D}><w:rPr/></w:rPrChange></w:rPr><w:pPrChange w:id="2" {D}><w:pPr><w:pStyle w:val="Normal"/><w:ind w:left="720"/></w:pPr></w:pPrChange></w:pPr><w:r><w:t>Text</w:t></w:r></w:p>"#
+    );
+    let mut d = docx(&body);
+    d.resolve_changes(&[], None, false).unwrap();
+    let xml = d.dom.to_xml();
+    assert!(xml.contains(r#"<w:pStyle w:val="Normal"/><w:ind w:left="720"/>"#), "{xml}");
+    assert!(!xml.contains("Change") && !xml.contains("<w:b/>"), "{xml}");
+    let mut d = docx(&body);
+    d.resolve_ids(&[], &["c1".into(), "c2".into()]).unwrap();
+    assert!(d.changes().is_empty());
+}
+
+#[test]
+fn reject_mark_format_keeps_mark_insertion() {
+    let body = format!(
+        r#"<w:p><w:pPr><w:rPr><w:ins w:id="1" {D}/><w:b/><w:rPrChange w:id="2" w:author="Bob" w:date="2026-01-01T00:00:00Z"><w:rPr/></w:rPrChange></w:rPr></w:pPr><w:r><w:t>Text</w:t></w:r></w:p>"#
+    );
+    let mut d = docx(&body);
+    d.resolve_ids(&[], &["c2".into()]).unwrap();
+    let ch = d.changes();
+    assert_eq!(ch.len(), 1, "{ch:?}");
+    assert_eq!(ch[0].author, "Alice");
+}
+
+#[test]
+fn tracked_changes_inside_equations() {
+    let body = format!(
+        r#"<w:p><w:r><w:t xml:space="preserve">Formula </w:t></w:r><m:oMath><m:r><w:rPr><w:del w:id="7" {D}/></w:rPr><m:t>x+1</m:t></m:r><m:r><w:rPr><w:ins w:id="8" {D}/></w:rPr><m:t>y+2</m:t></m:r></m:oMath><w:r><w:t xml:space="preserve"> end.</w:t></w:r></w:p>"#
+    );
+    let d = docx(&body);
+    let kinds: Vec<_> = d.changes().iter().map(|c| (c.kind, c.text.clone())).collect();
+    use docex_core::revisions::ChangeKind::*;
+    assert_eq!(kinds, vec![(Delete, "x+1".to_string()), (Insert, "y+2".to_string())]);
+    // Not shown as one formula mixing old and new.
+    assert!(d.render(View::Review).contains("Formula <!--docex:math--> end."), "{}", d.render(View::Review));
+    let mut a = docx(&body);
+    a.resolve_changes(&[], None, true).unwrap();
+    let xml = a.dom.to_xml();
+    assert!(!xml.contains("x+1") && xml.contains("y+2") && !xml.contains("w:ins"), "{xml}");
+    assert!(a.render(View::Review).contains("$y+2$"));
+    let mut r = docx(&body);
+    r.resolve_changes(&[], None, false).unwrap();
+    let xml = r.dom.to_xml();
+    assert!(xml.contains("x+1") && !xml.contains("y+2") && !xml.contains("w:del"), "{xml}");
+}
+
+#[test]
+fn accepting_deletion_of_whole_table_removes_it() {
+    let mut d = docx(r#"<w:p><w:r><w:t>Before</w:t></w:r></w:p><w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>After</w:t></w:r></w:p>"#);
+    let md = d.render(View::Review).replace("| cell |\n| --- |\n\n", "").replace("| cell |\n| --- |", "");
+    d.apply(&md, &opts(true)).unwrap();
+    let mut d = reopen(&mut d);
+    assert!(d.dom.to_xml().contains("<w:tbl>"));
+    d.resolve_changes(&[], None, true).unwrap();
+    assert!(!d.dom.to_xml().contains("<w:tbl>"), "{}", d.dom.to_xml());
+}
+
+#[test]
+fn critic_tokens_in_code_are_literal() {
+    let mut d = docx(r#"<w:p><w:r><w:t xml:space="preserve">Use </w:t></w:r><w:r><w:rPr><w:rStyle w:val="VerbatimChar"/></w:rPr><w:t>if(x){--i;}</w:t></w:r><w:r><w:t xml:space="preserve"> to decrement.</w:t></w:r></w:p><w:p><w:r><w:t>Second paragraph here.</w:t></w:r></w:p>"#);
+    let md = d.render(View::Review);
+    assert!(md.contains("`if(x){--i;}`"), "{md}");
+    let r = d.apply(&md.replace("paragraph here", "paragraph NEW here"), &opts(true)).unwrap();
+    assert!(r.changed(), "{r:?}");
+    assert!(d.render(View::Review).contains("Second paragraph {++NEW ++}here."));
+    // An unclosed marker doesn't swallow later paragraphs.
+    let mut d = docx(WORDY);
+    let md = d.render(View::Review).replace("Second clause stays.", "Second {--clause stays.\n\nThird para.");
+    d.apply(&md, &opts(true)).unwrap();
+    assert!(d.render(View::Review).contains("Third para."), "{}", d.render(View::Review));
+}
+
+#[test]
+fn break_then_indented_marker_and_placeholder_in_box() {
+    let mut d = docx(r#"<w:p><w:r><w:t>Items:</w:t><w:br/><w:t xml:space="preserve"> - first</w:t></w:r></w:p><w:p><w:r><w:t>Next.</w:t></w:r></w:p>"#);
+    let md = d.render(View::Review);
+    assert!(!d.apply(&md, &opts(true)).unwrap().changed(), "{md}");
+    let boxed = BOXED.replace("<w:r><w:t>Box text here.</w:t></w:r>", r#"<w:r><w:sym w:font="Symbol" w:char="F0B7"/></w:r><w:r><w:t>Box text here.</w:t></w:r>"#);
+    let mut d = docx(&boxed);
+    let md = d.render(View::Review);
+    assert!(!d.apply(&md, &opts(true)).unwrap().changed(), "{md}");
+}
+
+#[test]
+fn point_comment_at_paragraph_start() {
+    let mut d = docx(WORDY);
+    let md = d.render(View::Review).replace("Second clause stays.", "{>>note<<}Second clause stays.");
+    let r = d.apply(&md, &opts(true)).unwrap();
+    assert_eq!(r.comments_added, 1);
+    let d = reopen(&mut d);
+    assert!(d.comment_list().iter().any(|c| c.text == "note" && c.anchor == "S"));
+}
+
+#[test]
+fn unrelated_accept_leaves_text_box_fallback_alone() {
+    let boxed = BOXED.replacen("<w:t>Box text here.</w:t>", "<w:t>Box text here.</w:t>", 1).replace(
+        "<v:textbox><w:txbxContent><w:p><w:r><w:t>Box text here.</w:t>",
+        "<v:textbox><w:txbxContent><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Box text here.</w:t>",
+    );
+    let body = format!(r#"{boxed}<w:p><w:ins w:id="9" {D}><w:r><w:t>Added.</w:t></w:r></w:ins></w:p>"#);
+    let mut d = docx(&body);
+    d.resolve_changes(&[], None, true).unwrap();
+    assert!(d.dom.to_xml().contains("<w:rPr><w:b/></w:rPr><w:t>Box text here.</w:t>"));
+}
+
+#[test]
+fn deleting_anchor_paragraph_keeps_box_text_plain() {
+    let mut d = docx(BOXED);
+    let md = d.render(View::Review).replace("<!--docex:shape-->Anchor text.", "");
+    d.apply(&md, &opts(true)).unwrap();
+    let xml = d.dom.to_xml();
+    let inside: Vec<&str> = xml.split("<w:txbxContent>").skip(1).map(|s| s.split("</w:txbxContent>").next().unwrap()).collect();
+    assert!(inside.iter().all(|b| b.contains("<w:t>Box text here.</w:t>") && !b.contains("delText")), "{xml}");
+}
+
+#[test]
+fn change_ids_are_unique_across_wrappers() {
+    let mut d = docx(r#"<w:p><w:r><w:t xml:space="preserve">Visit </w:t></w:r><w:hyperlink w:anchor="x"><w:r><w:t>the site</w:t></w:r></w:hyperlink><w:r><w:t xml:space="preserve"> today please.</w:t></w:r></w:p>"#);
+    let md = d.render(View::Review).replace("[the site](#x) today ", "");
+    d.apply(&md, &opts(true)).unwrap();
+    let xml = d.dom.to_xml();
+    let ids: Vec<&str> = xml.split("<w:del w:id=\"").skip(1).map(|s| s.split('"').next().unwrap()).collect();
+    assert!(ids.len() >= 2, "{xml}");
+    let uniq: std::collections::HashSet<_> = ids.iter().collect();
+    assert_eq!(uniq.len(), ids.len(), "{ids:?}");
+}
+
+#[test]
+fn keep_opaque_preserves_unmatched_placeholders() {
+    let body = r#"<w:sdt><w:sdtPr><w:docPartObj><w:docPartGallery w:val="Table of Contents"/></w:docPartObj></w:sdtPr><w:sdtContent><w:p><w:r><w:t>TOC</w:t></w:r></w:p></w:sdtContent></w:sdt><w:p><w:r><w:t>Body text.</w:t></w:r></w:p>"#;
+    let mut d = docx(body);
+    let mut o = opts(false);
+    o.keep_opaque = true;
+    d.apply("Body text changed.\n", &o).unwrap();
+    assert!(d.dom.to_xml().contains("Table of Contents"));
+    assert!(d.render(View::Review).contains("Body text changed."));
 }

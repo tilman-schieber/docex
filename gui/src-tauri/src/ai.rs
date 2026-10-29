@@ -203,15 +203,17 @@ pub async fn complete(app: tauri::AppHandle, req: Request) -> Result<String, Str
 
     // Server-sent events: `data: {...}` lines.
     let mut out = String::new();
-    let mut buf = String::new();
+    // Raw bytes: a multi-byte character can be split across network chunks,
+    // so only complete lines are decoded.
+    let mut buf: Vec<u8> = Vec::new();
     let mut stop_reason = String::new();
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| e.to_string())?;
-        buf.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(nl) = buf.find('\n') {
-            let line = buf[..nl].trim_end_matches('\r').to_string();
-            buf.drain(..=nl);
+        buf.extend_from_slice(&chunk);
+        while let Some(nl) = buf.iter().position(|b| *b == b'\n') {
+            let raw: Vec<u8> = buf.drain(..=nl).collect();
+            let line = String::from_utf8_lossy(&raw).trim_end_matches(['\r', '\n']).to_string();
             let Some(data) = line.strip_prefix("data:").map(str::trim) else { continue };
             if data == "[DONE]" {
                 continue;

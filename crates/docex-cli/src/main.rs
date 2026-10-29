@@ -288,7 +288,7 @@ fn read_md(p: &Path) -> Result<String> {
     std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))
 }
 
-fn apply_and_save(doc: &mut Docx, file: &Path, md: &str, base: &Path, w: &WriteArgs) -> Result<()> {
+fn apply_and_save(doc: &mut Docx, file: &Path, md: &str, base: &Path, w: &WriteArgs, keep_opaque: bool) -> Result<()> {
     let tracked = if w.track {
         true
     } else if w.untracked {
@@ -296,7 +296,7 @@ fn apply_and_save(doc: &mut Docx, file: &Path, md: &str, base: &Path, w: &WriteA
     } else {
         doc.track_changes()?
     };
-    let opts = ApplyOpts { author: author(w.author.as_deref()), date: now_iso(), tracked, base_dir: Some(base.to_path_buf()) };
+    let opts = ApplyOpts { author: author(w.author.as_deref()), date: now_iso(), tracked, base_dir: Some(base.to_path_buf()), keep_opaque };
     let report = doc.apply(md, &opts)?;
     print_report(&report, opts.tracked);
     if doc.is_dirty() {
@@ -383,7 +383,7 @@ fn main() -> Result<()> {
             let after = std::fs::read_to_string(&md_path)?;
             if after == before {
                 eprintln!("no changes");
-            } else if let Err(e) = apply_and_save(&mut doc, &file, &after, &dir, &w) {
+            } else if let Err(e) = apply_and_save(&mut doc, &file, &after, &dir, &w, false) {
                 bail!("{e:#}\nyour edited text is kept in {}", md_path.display());
             }
             let _ = std::fs::remove_dir_all(&dir);
@@ -391,7 +391,7 @@ fn main() -> Result<()> {
         Cmd::Apply { file, markdown, w } => {
             let mut doc = Docx::open(&file)?;
             let md = read_md(&markdown)?;
-            apply_and_save(&mut doc, &file, &md, &base_of(&markdown), &w)?;
+            apply_and_save(&mut doc, &file, &md, &base_of(&markdown), &w, false)?;
         }
         Cmd::Changes { file, json } => {
             let doc = Docx::open(&file)?;
@@ -494,7 +494,8 @@ fn main() -> Result<()> {
             let db = Docx::open(&b)?;
             if into {
                 let mut da = da;
-                apply_and_save(&mut da, &a, &db.render(View::Accepted), Path::new("."), &w)?;
+                // B's placeholders don't correspond to A's blocks: keep A's.
+                apply_and_save(&mut da, &a, &db.render(View::Accepted), Path::new("."), &w, true)?;
             } else {
                 let ta = da.render(View::Accepted);
                 let tb = db.render(View::Accepted);
@@ -517,7 +518,7 @@ fn resolve(file: &Path, ids: &[String], by: Option<&str>, accept: bool, out: &Ou
         let (a, r) = if accept { doc.resolve_ids(&rids, &[])? } else { doc.resolve_ids(&[], &rids)? };
         a + r
     } else {
-        let nums: Vec<usize> = nums.iter().map(|n| n.parse().unwrap()).collect();
+        let nums: Vec<usize> = nums.iter().map(|n| n.parse().map_err(|_| anyhow::anyhow!("no change #{n}"))).collect::<Result<_>>()?;
         doc.resolve_changes(&nums, by, accept)?
     };
     eprintln!("{n} changes {}", if accept { "accepted" } else { "rejected" });

@@ -69,17 +69,20 @@ impl ChangeKind {
     }
 }
 
-fn kind_of(e: &Element, parent: &Element) -> Option<ChangeKind> {
+/// `grand` is the parent of `parent` (needed for `w:rPr` markers: a paragraph
+/// mark inside `w:pPr`, a math run inside `m:r`).
+fn kind_of(e: &Element, parent: &Element, grand: Option<&str>) -> Option<ChangeKind> {
     use ChangeKind::*;
+    let mark = grand == Some("w:pPr");
     Some(match (e.name.as_str(), parent.name.as_str()) {
-        ("w:ins", "w:rPr") => ParagraphInsert,
-        ("w:del", "w:rPr") => ParagraphDelete,
+        ("w:ins", "w:rPr") if mark => ParagraphInsert,
+        ("w:del", "w:rPr") if mark => ParagraphDelete,
         ("w:ins", "w:trPr") => RowInsert,
         ("w:del", "w:trPr") => RowDelete,
         ("w:ins", _) => Insert,
         ("w:del", _) => Delete,
-        ("w:moveTo", "w:rPr") => ParagraphInsert,
-        ("w:moveFrom", "w:rPr") => ParagraphDelete,
+        ("w:moveTo", "w:rPr") if mark => ParagraphInsert,
+        ("w:moveFrom", "w:rPr") if mark => ParagraphDelete,
         ("w:moveTo", _) => MoveTo,
         ("w:moveFrom", _) => MoveFrom,
         ("w:rPrChange", _) => Format,
@@ -115,7 +118,8 @@ pub fn list(root: &Element) -> Vec<Change> {
     let mut raw = Vec::new();
     let mut path = Vec::new();
     let mut names = Vec::new();
-    collect(root, &mut path, &mut names, &mut raw);
+    let mut anc = Vec::new();
+    collect(root, &mut path, &mut names, &mut anc, &mut raw);
     let mut out: Vec<Change> = Vec::new();
     for ch in raw {
         if let Some(last) = out.last_mut() {
@@ -155,12 +159,18 @@ pub fn list(root: &Element) -> Vec<Change> {
     out
 }
 
-fn collect(e: &Element, path: &mut Vec<usize>, names: &mut Vec<String>, out: &mut Vec<Change>) {
+fn collect<'a>(e: &'a Element, path: &mut Vec<usize>, names: &mut Vec<String>, anc: &mut Vec<&'a Element>, out: &mut Vec<Change>) {
+    let grand = anc.last().copied();
     for (i, c) in e.children.iter().enumerate() {
         let Node::Element(c) = c else { continue };
         path.push(i);
-        if let Some(kind) = kind_of(c, e) {
-            let text = if kind == ChangeKind::Format { String::new() } else { excerpt(c, kind) };
+        if let Some(kind) = kind_of(c, e, grand.map(|g| g.name.as_str())) {
+            // A marker in a math run's properties changes the whole run.
+            let text = match (kind, grand) {
+                (ChangeKind::Format, _) => String::new(),
+                (ChangeKind::Insert | ChangeKind::Delete, Some(g)) if e.is("w:rPr") => excerpt(g, ChangeKind::Insert),
+                _ => excerpt(c, kind),
+            };
             // names[k] is the name of the element at path[..k] (k >= 1).
             let container = (1..path.len())
                 .rev()
@@ -182,7 +192,9 @@ fn collect(e: &Element, path: &mut Vec<usize>, names: &mut Vec<String>, out: &mu
         names.push(c.name.clone());
         // Text box content exists twice (modern + VML fallback); list it once.
         if !c.is("mc:Fallback") {
-            collect(c, path, names, out);
+            anc.push(e);
+            collect(c, path, names, anc, out);
+            anc.pop();
         }
         names.pop();
         path.pop();
@@ -287,18 +299,71 @@ fn merge_with_next(root: &mut Element, ppath: &[usize]) {
     }
 }
 
+/// Path of the first element named `name` with this `w:id`.
+fn find_by_id(e: &Element, name: &str, id: &str, path: &mut Vec<usize>) -> bool {
+    for (i, c) in e.children.iter().enumerate() {
+        let Node::Element(c) = c else { continue };
+        path.push(i);
+        if c.name == name && c.attr("w:id") == Some(id) {
+            return true;
+        }
+        if !c.is("mc:Fallback") && find_by_id(c, name, id, path) {
+            return true;
+        }
+        path.pop();
+    }
+    false
+}
+
+/// Remove the row at `row` and, if it was the table's last row, the table.
+fn remove_row(root: &mut Element, row: &[usize]) {
+    remove_at(root, row);
+    let tbl = &row[..row.len() - 1];
+    if let Some(t) = at(root, tbl) {
+        if t.is("w:tbl") && !t.elements().any(|e| e.is("w:tr")) {
+            remove_at(root, tbl);
+        }
+    }
+}
+
 /// Accept (`accept = true`) or reject the selected changes.
 pub fn resolve(root: &mut Element, changes: &[Change], accept: bool) -> usize {
-    let mut sel: Vec<&Part> = changes.iter().flat_map(|c| c.parts.iter()).collect();
+    use ChangeKind::*;
+    let parts: Vec<&Part> = changes.iter().flat_map(|c| c.parts.iter()).collect();
+    // Formatting records are found again by id at the end: resolving them
+    // rewrites property elements, which would invalidate other parts' paths.
+    let mut formats: Vec<(String, String, ChangeKind)> = Vec::new();
+    let mut sel: Vec<&Part> = Vec::new();
+    for p in parts {
+        if matches!(p.kind, Format | ParagraphFormat | TableFormat | SectionFormat) {
+            if let Some(e) = at(root, &p.path) {
+                formats.push((e.name.clone(), e.attr("w:id").unwrap_or("").to_string(), p.kind));
+            }
+        } else {
+            sel.push(p);
+        }
+    }
     // Deepest / latest first, so earlier paths stay valid.
     sel.sort_by(|a, b| b.path.cmp(&a.path));
     for ch in sel {
         let path = &ch.path;
-        use ChangeKind::*;
         let keep_content = matches!((ch.kind, accept), (Insert | MoveTo, true) | (Delete | MoveFrom, false));
         match ch.kind {
             Insert | Delete | MoveTo | MoveFrom => {
-                if keep_content {
+                let in_rpr = path.len() >= 2 && at(root, &path[..path.len() - 1]).is_some_and(|p| p.is("w:rPr"));
+                if in_rpr {
+                    // A marker in a (math) run's properties: the run is the content.
+                    let rpr = &path[..path.len() - 1];
+                    let run = &path[..path.len() - 2];
+                    if keep_content {
+                        remove_at(root, path);
+                        if at(root, rpr).is_some_and(|r| r.children.iter().all(|c| !matches!(c, Node::Element(_)))) {
+                            remove_at(root, rpr);
+                        }
+                    } else {
+                        remove_at(root, run);
+                    }
+                } else if keep_content {
                     unwrap_at(root, path, !accept);
                 } else {
                     remove_at(root, path);
@@ -323,34 +388,69 @@ pub fn resolve(root: &mut Element, changes: &[Change], accept: bool) -> usize {
                 if row_stays {
                     remove_at(root, path);
                 } else if path.len() >= 2 {
-                    remove_at(root, &path[..path.len() - 2]);
+                    remove_row(root, &path[..path.len() - 2]);
                 }
             }
-            Format | ParagraphFormat | TableFormat | SectionFormat => {
-                if accept || ch.kind == SectionFormat {
-                    remove_at(root, path);
-                } else {
-                    let (last, parent) = path.split_last().unwrap();
-                    let Some(owner) = at_mut(root, parent) else { continue };
-                    let Node::Element(chg) = owner.children.remove(*last) else { continue };
-                    let old: Vec<Node> = chg.elements().next().map(|e| e.children.clone()).unwrap_or_default();
-                    // Paragraph mark props and section props live outside the change record.
-                    let keep: Vec<Node> = owner
-                        .children
-                        .iter()
-                        .filter(|c| matches!(c, Node::Element(e) if ch.kind == ParagraphFormat && (e.is("w:rPr") || e.is("w:sectPr"))))
-                        .cloned()
-                        .collect();
-                    owner.children = old;
-                    owner.children.extend(keep);
-                }
-            }
+            Format | ParagraphFormat | TableFormat | SectionFormat => {}
+        }
+    }
+    for (name, id, kind) in formats {
+        let mut path = Vec::new();
+        if !find_by_id(root, &name, &id, &mut path) {
+            continue;
+        }
+        if accept || kind == SectionFormat {
+            remove_at(root, &path);
+            continue;
+        }
+        let (last, parent) = path.split_last().unwrap();
+        let Some(owner) = at_mut(root, parent) else { continue };
+        let Node::Element(chg) = owner.children.remove(*last) else { continue };
+        let old: Vec<Node> = chg.elements().next().map(|e| e.children.clone()).unwrap_or_default();
+        // Kept outside the change record: the paragraph mark's properties and
+        // section properties (pPr), and tracked-change markers (rPr).
+        let keep: Vec<Node> = owner
+            .children
+            .iter()
+            .filter(|c| match c {
+                Node::Element(e) if kind == ParagraphFormat => e.is("w:rPr") || e.is("w:sectPr"),
+                Node::Element(e) => matches!(e.name.as_str(), "w:ins" | "w:del" | "w:moveFrom" | "w:moveTo"),
+                _ => false,
+            })
+            .cloned()
+            .collect();
+        if kind == ParagraphFormat {
+            owner.children = old;
+            owner.children.extend(keep);
+        } else {
+            // Markers come first in w:rPr.
+            owner.children = keep;
+            owner.children.extend(old);
         }
     }
     changes.len()
 }
 
-/// Make the VML fallback copy of each text box match its modern copy.
+/// The text and change structure of a text box, ignoring formatting.
+fn box_signature(e: &Element) -> String {
+    let mut s = String::new();
+    e.visit(&mut |x| match x.name.as_str() {
+        "w:p" | "w:ins" | "w:del" | "w:moveFrom" | "w:moveTo" => {
+            s.push('<');
+            s.push_str(&x.name);
+        }
+        "w:t" | "w:delText" => {
+            s.push(if x.is("w:t") { '|' } else { '~' });
+            s.push_str(&x.text_content());
+        }
+        _ => {}
+    });
+    s
+}
+
+/// Make the VML fallback copy of each text box match its modern copy, where
+/// the two now differ in text or tracked changes (copies that differ only in
+/// formatting are left untouched).
 pub fn sync_fallbacks(root: &mut Element) {
     root.visit_mut(&mut |e| {
         if !e.is("mc:AlternateContent") {
@@ -369,7 +469,9 @@ pub fn sync_fallbacks(root: &mut Element) {
             fb.visit_mut(&mut |x| {
                 if x.is("w:txbxContent") {
                     if let Some(m) = modern.get(k) {
-                        x.children = m.children.clone();
+                        if box_signature(m) != box_signature(x) {
+                            x.children = m.children.clone();
+                        }
                     }
                     k += 1;
                 }

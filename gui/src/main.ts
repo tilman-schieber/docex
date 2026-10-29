@@ -372,6 +372,7 @@ const cockpit = createCockpit({
   me: () => author,
   call: (cmd, args) => call(cmd, args),
   toast,
+  tracking: () => tracking,
   triage: (items, scope) =>
     openTriage(items, scope, {
       show: (it) => cockpit.focus(it, true),

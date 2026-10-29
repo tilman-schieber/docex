@@ -3,7 +3,7 @@
 //!   modelcheck check FILE.docx IN.json   apply a model; report whether anything changed
 //!   modelcheck FILE.docx...              model -> JSON -> apply must be a no-op
 fn opts() -> docex_core::ApplyOpts {
-    docex_core::ApplyOpts { author: "X".into(), date: "2026-01-01T00:00:00Z".into(), tracked: true, base_dir: None }
+    docex_core::ApplyOpts { author: "X".into(), date: "2026-01-01T00:00:00Z".into(), tracked: true, base_dir: None, keep_opaque: false }
 }
 
 fn main() {

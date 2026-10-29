@@ -412,6 +412,8 @@ impl Docx {
                                 sp.replace.insert(p.path[0], r);
                             }
                         }
+                        (Block::Opaque { .. }, _) if opts.keep_opaque => {}
+                        (Block::Table(t), _) if opts.keep_opaque && !t.simple => {}
                         (b, _) => {
                             let idx = b.body_idx();
                             if opts.tracked {
@@ -433,7 +435,9 @@ impl Docx {
                         mdparse::EBlock::Para(e) => patch::new_para(e, near, &mut cx),
                         mdparse::EBlock::Table(rows) => patch::new_table(rows, &mut cx),
                         mdparse::EBlock::Opaque(n) => {
-                            cx.warnings.push(format!("placeholder b{n} cannot be copied or moved; ignored"));
+                            if !opts.keep_opaque {
+                                cx.warnings.push(format!("placeholder b{n} cannot be copied or moved; ignored"));
+                            }
                             continue;
                         }
                     };
@@ -784,7 +788,7 @@ impl Docx {
         };
         let (si, ei) = (hit.si, hit.ei);
         let id = self.comments.next_id(&self.dom.root);
-        let opts = Opts { author: author.to_string(), date: date.to_string(), tracked: false, base_dir: None };
+        let opts = Opts { author: author.to_string(), date: date.to_string(), tracked: false, base_dir: None, keep_opaque: false };
         let mut numbering = None;
         let carry = Carry { next_comment_id: id, ..Default::default() };
         let mut cx = PatchCtx::new(&opts, &self.styles, &mut self.rels, &mut numbering, &[], carry);
@@ -996,7 +1000,7 @@ impl Docx {
             }
             None => Docx::from_bytes(template::blank(&date)?)?,
         };
-        let report = d.apply(md, &Opts { author: author.to_string(), date, tracked: false, base_dir: Some(base_dir.to_path_buf()) })?;
+        let report = d.apply(md, &Opts { author: author.to_string(), date, tracked: false, base_dir: Some(base_dir.to_path_buf()), keep_opaque: false })?;
         d.dirty.dom = true;
         Ok((d, report))
     }

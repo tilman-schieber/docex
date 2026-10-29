@@ -29,6 +29,8 @@ export interface App {
   me(): string;
   call(cmd: string, args?: Record<string, unknown>): Promise<View | undefined>;
   toast(msg: string, kind?: "info" | "error"): void;
+  /** Whether Track Changes is on. */
+  tracking(): boolean;
   /** Review the given items one by one. */
   triage(items: Item[], scope: string): void;
   /** AI summary of the given items. */
@@ -187,10 +189,34 @@ export function createCockpit(app: App) {
     view.dispatch(tr);
   }
 
+  const sig = (i: Item) => `${i.kind}\u0001${i.old ?? ""}\u0001${i.new ?? ""}`;
+
   async function resolve(items: Item[], accept: boolean) {
     refreshNow();
     const keys = new Set(items.map((i) => i.key));
     const fresh = index.items.filter((i) => keys.has(i.key));
+    // Accepting your own unsaved insertion with Track Changes on: make it a
+    // real tracked change first and accept that; just dropping the mark here
+    // would have the next sync track it again.
+    if (accept && app.tracking() && fresh.some((i) => i.pending && i.parts.some((p) => p.type === "ins"))) {
+      const synced = fresh.filter((i) => !i.pending);
+      const want = fresh.filter((i) => i.pending).map(sig);
+      await app.call("sync");
+      refreshNow();
+      const mine = index.items.filter((i) => !i.pending && i.author === app.me() && i.kind !== "comment");
+      const used = new Set<string>();
+      const mapped: Item[] = [];
+      for (const w of want) {
+        const m = mine.find((i) => !used.has(i.key) && sig(i) === w);
+        if (m) {
+          used.add(m.key);
+          mapped.push(m);
+        }
+      }
+      const wids = [...synced, ...mapped].flatMap((i) => i.wids);
+      if (wids.length) await app.call("resolve", { wids, accept });
+      return;
+    }
     resolveLocal(fresh, accept);
     const wids = fresh.filter((i) => !i.pending).flatMap((i) => i.wids);
     if (wids.length) await app.call("resolve", { wids, accept });
@@ -795,7 +821,8 @@ export function createCockpit(app: App) {
       await app.call("sync");
       refreshNow();
     }
-    const list = shown().filter((i) => !i.pending);
+    // Only items there is something to decide on: changes with Word ids, threads.
+    const list = shown().filter((i) => !i.pending && (i.kind === "comment" || i.wids.length > 0));
     if (!list.length) return app.toast("Nothing to triage with the current filter.");
     app.triage(list, scopeLabel());
   }

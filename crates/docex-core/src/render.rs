@@ -568,7 +568,9 @@ impl Writer {
                 let c = chars[i];
                 let prev = if i > 0 { Some(chars[i - 1]) } else { self.out.chars().last() };
                 let next = chars.get(i + 1).copied();
-                let line_start = self.out.is_empty() || self.out.ends_with('\n');
+                // At a line start, or after only spaces on this line (a line
+                // break followed by " - x" must not become a list).
+                let line_start = self.out.rsplit('\n').next().is_none_or(|l| l.chars().all(|c| c == ' ' || c == '\t'));
                 // "1. Intro" at a line start must not turn into a list.
                 if line_start && c.is_ascii_digit() && !self.mode.code {
                     let mut j = i;

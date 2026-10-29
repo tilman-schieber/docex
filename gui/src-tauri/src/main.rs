@@ -120,7 +120,7 @@ fn with_session<T>(
     let s = guard.as_mut().ok_or("no document open")?;
     let mut warnings = Vec::new();
     if let Some(m) = model {
-        let opts = ApplyOpts { author, date: now_iso(), tracked, base_dir: None };
+        let opts = ApplyOpts { author, date: now_iso(), tracked, base_dir: None, keep_opaque: false };
         let r = s.doc.apply_model(m, &opts).map_err(err)?;
         warnings.extend(r.warnings.iter().cloned());
         if r.changed() {

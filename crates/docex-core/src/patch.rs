@@ -41,6 +41,10 @@ pub struct Opts {
     pub tracked: bool,
     /// Directory that relative image paths in the Markdown are resolved against.
     pub base_dir: Option<std::path::PathBuf>,
+    /// Keep blocks docex can't edit (TOC, content controls, complex tables)
+    /// even when the new text doesn't mention them, e.g. when the text comes
+    /// from another document (`docex diff --into`).
+    pub keep_opaque: bool,
 }
 
 pub struct PatchCtx<'a> {
@@ -489,7 +493,7 @@ impl<'p> Planner<'p> {
 /// Plan a paragraph's new item sequence. `new = None` deletes all content.
 fn plan(p: &Para, orig: &[EAtom], new: Option<&[EAtom]>, comments: &[EComment], cx: &mut PatchCtx) -> (Vec<Out>, bool) {
     let map = map_atoms(p, orig);
-    let cm = CommentMarks::new(comments, cx);
+    let cm = CommentMarks::new(comments, new.map_or(0, |n| n.len()), cx);
     let tracked = cx.opts.tracked;
     let me = cx.opts.author.clone();
     let mut pl = Planner { p, outs: Vec::new(), next: 0, last_vis: None, group: 0, last_op: 0, changed: false };
@@ -623,15 +627,23 @@ struct CommentMarks {
 }
 
 impl CommentMarks {
-    fn new(comments: &[EComment], cx: &mut PatchCtx) -> CommentMarks {
+    /// `n` is the number of atoms in the paragraph being written.
+    fn new(comments: &[EComment], n: usize, cx: &mut PatchCtx) -> CommentMarks {
         let mut marks = Vec::new();
         for c in comments {
-            let (mut s, e) = (c.start, c.end);
+            let (mut s, mut e) = (c.start, c.end);
             if s == e {
-                if s == 0 {
+                // A point comment anchors on the character before it, or the
+                // first one when it's at the start.
+                if n == 0 {
+                    cx.warnings.push(format!("comment \"{}\" has no text to attach to; not added", c.text));
                     continue;
                 }
-                s -= 1;
+                if s == 0 {
+                    e = 1;
+                } else {
+                    s -= 1;
+                }
             }
             let id = cx.next_comment_id;
             cx.next_comment_id += 1;
@@ -793,20 +805,28 @@ pub fn set_marks(rpr: Option<&Element>, marks: Marks, link: bool, styles: &Style
 }
 
 fn deleted_node(n: &Node, del: bool) -> Node {
+    // Text boxes inside the node keep their own paragraphs as they are.
+    fn walk(x: &mut Element, del: bool) {
+        let to = match (x.name.as_str(), del) {
+            ("w:t", true) => Some("w:delText"),
+            ("w:instrText", true) => Some("w:delInstrText"),
+            ("w:delText", false) => Some("w:t"),
+            ("w:delInstrText", false) => Some("w:instrText"),
+            _ => None,
+        };
+        if let Some(to) = to {
+            x.rename(to);
+        }
+        if x.is("w:txbxContent") {
+            return;
+        }
+        for c in x.elements_mut() {
+            walk(c, del);
+        }
+    }
     let mut n = n.clone();
     if let Node::Element(e) = &mut n {
-        e.visit_mut(&mut |x| {
-            let to = match (x.name.as_str(), del) {
-                ("w:t", true) => Some("w:delText"),
-                ("w:instrText", true) => Some("w:delInstrText"),
-                ("w:delText", false) => Some("w:t"),
-                ("w:delInstrText", false) => Some("w:instrText"),
-                _ => None,
-            };
-            if let Some(to) = to {
-                x.rename(to);
-            }
-        });
+        walk(e, del);
     }
     n
 }
@@ -986,7 +1006,6 @@ struct Builder<'a, 'b> {
     stack: Vec<Frame>,
     run: Option<(RunKey, Element)>,
     text: String,
-    ids: HashMap<(u8, u32), String>,
 }
 
 impl Builder<'_, '_> {
@@ -1048,18 +1067,12 @@ impl Builder<'_, '_> {
                 let p = self.p.unwrap();
                 if p.wraps[*w].content_child.is_some() { Element::new("w:sdtContent") } else { p.wraps[*w].shell.clone() }
             }
-            CtxEl::NewIns(g) | CtxEl::NewDel(g) => {
+            CtxEl::NewIns(_) | CtxEl::NewDel(_) => {
                 let ins = matches!(el, CtxEl::NewIns(_));
-                let key = (ins as u8, *g);
                 let name = if ins { "w:ins" } else { "w:del" };
-                let id = match self.ids.get(&key) {
-                    Some(id) => id.clone(),
-                    None => {
-                        let id = self.cx.id();
-                        self.ids.insert(key, id.clone());
-                        id
-                    }
-                };
+                // Every element gets its own id, also when one edit is split
+                // around a hyperlink or field.
+                let id = self.cx.id();
                 Element::new(name)
                     .with_attr("w:id", id)
                     .with_attr("w:author", self.cx.opts.author.clone())
@@ -1200,7 +1213,7 @@ impl Builder<'_, '_> {
 }
 
 fn build(p: Option<&Para>, fallback_rpr: Option<Element>, outs: Vec<Out>, cx: &mut PatchCtx) -> Vec<Node> {
-    let mut b = Builder { p, fallback_rpr, cx, root: Vec::new(), stack: Vec::new(), run: None, text: String::new(), ids: HashMap::new() };
+    let mut b = Builder { p, fallback_rpr, cx, root: Vec::new(), stack: Vec::new(), run: None, text: String::new() };
     for o in outs {
         b.push(o);
     }
@@ -1446,7 +1459,7 @@ pub fn new_para(e: &EPara, near: Option<usize>, cx: &mut PatchCtx) -> Node {
         let ins = cx.change_el("w:ins");
         mark_rpr(&mut ppr).insert_ordered(ins, RPR_ORDER);
     }
-    let cm = CommentMarks::new(&e.comments, cx);
+    let cm = CommentMarks::new(&e.comments, e.atoms.len(), cx);
     let mut outs: Vec<Out> = Vec::new();
     // "Figure 3: ..." in a new caption gets a real auto-numbering field.
     let seq = if e.kind == Kind::Caption { caption_number(&e.atoms) } else { None };
@@ -1650,7 +1663,7 @@ pub fn new_cell_para(e: &EPara, ppr: Option<Element>, rpr: Option<Element>, cx: 
         let ins = cx.change_el("w:ins");
         mark_rpr(&mut ppr).insert_ordered(ins, RPR_ORDER);
     }
-    let cm = CommentMarks::new(&e.comments, cx);
+    let cm = CommentMarks::new(&e.comments, e.atoms.len(), cx);
     let mut outs: Vec<Out> = Vec::new();
     for (k, a) in e.atoms.iter().enumerate() {
         cm.before(k, &mut outs, None);

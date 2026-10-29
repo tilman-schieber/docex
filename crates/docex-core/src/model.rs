@@ -498,7 +498,11 @@ fn walk_content(p: &mut Para, parent: &Element, ctx: &mut Vec<usize>, cx: &Ctx) 
             }
             "m:oMath" | "m:oMathPara" => {
                 // Equations become LaTeX where the converter covers them.
-                let key = match crate::math::omml_to_latex(e) {
+                // An equation with tracked changes inside stays a placeholder:
+                // its LaTeX would mix old and new.
+                let mut tracked = false;
+                e.visit(&mut |x| tracked |= matches!(x.name.as_str(), "w:ins" | "w:del" | "w:moveFrom" | "w:moveTo"));
+                let key = match crate::math::omml_to_latex(e).filter(|_| !tracked) {
                     Some(l) if e.is("m:oMathPara") => format!("mathd:{l}"),
                     Some(l) => format!("math:{l}"),
                     None => "<!--docex:math-->".into(),

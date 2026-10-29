@@ -117,18 +117,68 @@ fn is_sentinel(c: char) -> bool {
     ('\u{FDD0}'..='\u{FDDA}').contains(&c)
 }
 
+#[derive(Default)]
+struct Critic {
+    ins: u32,
+    del: u32,
+    sub: u32,
+    hl: u32,
+    cm: bool,
+}
+
 /// Replace CriticMarkup delimiters with sentinel characters.
 ///
 /// Each kind is tracked on its own rather than as a stack, because ranges
 /// from Word overlap: a comment can start inside an insertion and end after
-/// it (`{++a {==b++} c==}`).
+/// it (`{++a {==b++} c==}`). Markers never span a blank line. Inline code is
+/// copied as is (literal braces inside it are code, not markup); in fenced
+/// code a marker counts only when it is closed on the same line, which is
+/// how docex writes changes in code.
 fn critic_prepass(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
-    let (mut ins, mut del, mut sub, mut hl, mut cm) = (0u32, 0u32, 0u32, 0u32, false);
+    let mut st = Critic::default();
+    let mut fence: Option<(char, usize)> = None;
+    for line in src.split_inclusive('\n') {
+        let t = line.trim_start_matches(' ');
+        let fence_mark = (line.len() - t.len() <= 3)
+            .then(|| t.chars().next())
+            .flatten()
+            .filter(|c| *c == '`' || *c == '~')
+            .map(|c| (c, t.chars().take_while(|x| *x == c).count()))
+            .filter(|(_, n)| *n >= 3);
+        match (fence, fence_mark) {
+            (None, Some(m)) => {
+                fence = Some(m);
+                out.push_str(line);
+                continue;
+            }
+            (Some((c, n)), Some((c2, n2))) if c == c2 && n2 >= n && t.trim_end().chars().all(|x| x == c) => {
+                fence = None;
+                out.push_str(line);
+                continue;
+            }
+            (Some(_), _) => {
+                let mut local = Critic::default();
+                scan(line, &mut local, &mut out, true);
+                continue;
+            }
+            _ => {}
+        }
+        if line.trim().is_empty() {
+            st = Critic::default();
+            out.push_str(line);
+            continue;
+        }
+        scan(line, &mut st, &mut out, false);
+    }
+    out
+}
+
+fn scan(src: &str, st: &mut Critic, out: &mut String, fenced: bool) {
     let mut it = src.char_indices().peekable();
     while let Some((i, c)) = it.next() {
         let rest = &src[i..];
-        if c == '\\' {
+        if c == '\\' && !fenced {
             out.push(c);
             if let Some((_, n)) = it.next() {
                 out.push(n);
@@ -151,64 +201,90 @@ fn critic_prepass(src: &str) -> String {
                 }
             }
         }
+        // Inline code: copy through the matching backtick run.
+        if c == '`' && !fenced && !st.cm {
+            let n = rest.chars().take_while(|x| *x == '`').count();
+            let after = &rest[n..];
+            let mut close = None;
+            let mut k = 0;
+            while let Some(j) = after[k..].find('`') {
+                let at = k + j;
+                let m = after[at..].chars().take_while(|x| *x == '`').count();
+                if m == n {
+                    close = Some(at + m);
+                    break;
+                }
+                k = at + m;
+            }
+            let len = n + close.unwrap_or(0);
+            out.push_str(&rest[..len]);
+            while let Some((j, _)) = it.peek() {
+                if *j >= i + len {
+                    break;
+                }
+                it.next();
+            }
+            continue;
+        }
         let mut take = |tok: &str, sent: char, out: &mut String| {
             out.push(sent);
             for _ in 1..tok.chars().count() {
                 it.next();
             }
         };
-        if cm {
+        if st.cm {
             if rest.starts_with("<<}") {
-                take("<<}", CM_C, &mut out);
-                cm = false;
+                take("<<}", CM_C, out);
+                st.cm = false;
             } else {
                 out.push(c);
             }
             continue;
         }
+        // In fenced code, an opener counts only if it is closed on the same line.
+        let closed_later = |closer: &str| !fenced || rest[3.min(rest.len())..].contains(closer);
         let tok = [
-            ("{++", INS_O),
-            ("{--", DEL_O),
-            ("{~~", SUB_O),
-            ("{==", HL_O),
-            ("{>>", CM_O),
-            ("++}", INS_C),
-            ("--}", DEL_C),
-            ("~>", SUB_M),
-            ("~~}", SUB_C),
-            ("==}", HL_C),
+            ("{++", INS_O, "++}"),
+            ("{--", DEL_O, "--}"),
+            ("{~~", SUB_O, "~~}"),
+            ("{==", HL_O, "==}"),
+            ("{>>", CM_O, "<<}"),
+            ("++}", INS_C, ""),
+            ("--}", DEL_C, ""),
+            ("~>", SUB_M, ""),
+            ("~~}", SUB_C, ""),
+            ("==}", HL_C, ""),
         ]
         .into_iter()
-        .find(|(t, sent)| {
+        .find(|(t, sent, closer)| {
             rest.starts_with(t)
                 && match *sent {
-                    INS_C => ins > 0,
-                    DEL_C => del > 0,
-                    SUB_M | SUB_C => sub > 0,
-                    HL_C => hl > 0,
-                    _ => true,
+                    INS_C => st.ins > 0,
+                    DEL_C => st.del > 0,
+                    SUB_M | SUB_C => st.sub > 0,
+                    HL_C => st.hl > 0,
+                    _ => closed_later(closer),
                 }
         });
         match tok {
-            Some((t, sent)) => {
-                take(t, sent, &mut out);
+            Some((t, sent, _)) => {
+                take(t, sent, out);
                 match sent {
-                    INS_O => ins += 1,
-                    DEL_O => del += 1,
-                    SUB_O => sub += 1,
-                    HL_O => hl += 1,
-                    CM_O => cm = true,
-                    INS_C => ins -= 1,
-                    DEL_C => del -= 1,
-                    SUB_C => sub -= 1,
-                    HL_C => hl -= 1,
+                    INS_O => st.ins += 1,
+                    DEL_O => st.del += 1,
+                    SUB_O => st.sub += 1,
+                    HL_O => st.hl += 1,
+                    CM_O => st.cm = true,
+                    INS_C => st.ins -= 1,
+                    DEL_C => st.del -= 1,
+                    SUB_C => st.sub -= 1,
+                    HL_C => st.hl -= 1,
                     _ => {}
                 }
             }
             None => out.push(c),
         }
     }
-    out
 }
 
 #[derive(Default)]
@@ -279,6 +355,11 @@ impl P {
     }
 
     fn close_para(&mut self) {
+        // CriticMarkup never spans paragraphs: an unclosed marker ends here.
+        self.inl.st.clear();
+        self.inl.sub_second = false;
+        self.inl.in_comment = None;
+        self.inl.hl_start.clear();
         if let Some(mut p) = self.para.take() {
             if p.kind == Kind::Caption && p.atoms.first().is_some_and(|a| a.key == ":") {
                 p.atoms.remove(0);
@@ -526,10 +607,9 @@ pub fn parse_full(src: &str) -> Parsed {
                             }
                             ip.kind = p.context_kind();
                             p.close_para();
-                            trim(&mut ip);
-                            if !ip.atoms.is_empty() {
-                                p.blocks.push(EBlock::Para(ip));
-                            }
+                            // Through close_para, so it lands in a text box or note if we're in one.
+                            p.para = Some(ip);
+                            p.close_para();
                         }
                     }
                 }
