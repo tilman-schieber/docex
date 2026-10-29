@@ -44,6 +44,20 @@ export interface Item {
   label?: string;
   comment?: Comment;
   replies?: Comment[];
+  /** Low-signal change: formatting only, whitespace only, punctuation only. */
+  noise?: "formatting" | "whitespace" | "punctuation";
+  /** Key shared by identical edits made in several places. */
+  cluster?: string;
+}
+
+/** The same edit made in several places (e.g. "KI" -> "AI" 37 times). */
+export interface Cluster {
+  key: string;
+  kind: ItemKind;
+  old: string;
+  new: string;
+  items: Item[];
+  authors: string[];
 }
 
 export interface Person {
@@ -60,7 +74,21 @@ export interface Index {
   sections: Section[];
   items: Item[];
   people: Person[];
-  totals: { changes: number; comments: number; open: number; changePeople: number; commentPeople: number; pending: number };
+  clusters: Cluster[];
+  totals: { changes: number; comments: number; open: number; changePeople: number; commentPeople: number; pending: number; noise: number };
+}
+
+const PUNCT = /^[\s\p{P}\p{S}]*$/u;
+
+function classify(it: Item): Item["noise"] {
+  if (it.kind === "comment") return undefined;
+  if (it.kind === "format") return "formatting";
+  const o = it.old ?? "";
+  const n = it.new ?? "";
+  if (!o && !n) return undefined;
+  if (o.replace(/\s+/g, "") === n.replace(/\s+/g, "")) return "whitespace";
+  if (PUNCT.test(o) && PUNCT.test(n) && (o + n).trim().length <= 3) return "punctuation";
+  return undefined;
 }
 
 interface Range {
@@ -340,11 +368,33 @@ export function analyze(doc: PMNode, v: View | null, me: string): Index {
     else p.comments++;
     if (c.date > p.last) p.last = c.date;
   }
+  // Noise and repeated edits.
+  const groups = new Map<string, Item[]>();
+  for (const it of items) {
+    it.noise = classify(it);
+    if (it.kind === "comment" || it.pending || it.kind === "format" || it.label) continue;
+    const o = (it.old ?? "").trim();
+    const n = (it.new ?? "").trim();
+    if (!o && !n) continue;
+    const k = `${it.kind}\u0001${o}\u0001${n}`;
+    const g = groups.get(k);
+    if (g) g.push(it);
+    else groups.set(k, [it]);
+  }
+  const clusters: Cluster[] = [];
+  for (const [k, g] of groups) {
+    if (g.length < 2) continue;
+    for (const it of g) it.cluster = k;
+    clusters.push({ key: k, kind: g[0].kind, old: (g[0].old ?? "").trim(), new: (g[0].new ?? "").trim(), items: g, authors: [...new Set(g.map((i) => i.author))] });
+  }
+  clusters.sort((a, b) => b.items.length - a.items.length);
+
   const changeItems = items.filter((i) => i.kind !== "comment");
   const threads = items.filter((i) => i.kind === "comment");
   return {
     sections,
     items,
+    clusters,
     people: [...people.values()].sort((a, b) => b.inserts + b.deletes + b.other + b.comments - (a.inserts + a.deletes + a.other + a.comments)),
     totals: {
       changes: changeItems.length,
@@ -353,6 +403,7 @@ export function analyze(doc: PMNode, v: View | null, me: string): Index {
       changePeople: new Set(changeItems.map((i) => i.author)).size,
       commentPeople: new Set(comments.map((c) => c.author)).size,
       pending: changeItems.filter((i) => i.pending).length,
+      noise: changeItems.filter((i) => i.noise).length,
     },
   };
 }

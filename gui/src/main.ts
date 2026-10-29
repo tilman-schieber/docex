@@ -32,6 +32,8 @@ import {
   Save,
   SaveAll,
   Sigma,
+  Sparkles,
+  Command as CommandIcon,
   Table,
   Trash2,
   Undo2,
@@ -39,6 +41,11 @@ import {
 import { initTheme } from "./theme";
 import { highlightPlugin } from "./highlight";
 import { markdownBackspace, markdownRules, pasteMarkdown } from "./markdown";
+import { aiSettingsDialog, askDocument, draftReply, REWRITES, rewriteSelection, summarizeReview, type AIHost } from "./ai";
+import { openPalette, type Entry } from "./palette";
+import { computeSince, paraTexts, setSince, sincePlugin, type SinceResult, type Snapshot } from "./since";
+import { openTriage } from "./triage";
+import type { Item } from "./analyze";
 import { createCockpit } from "./cockpit";
 import { atomIndex, docToModel, modelToDoc, type PendingComment } from "./convert";
 import { imageUrls, KINDS, renderMath, schema } from "./schema";
@@ -260,6 +267,7 @@ function plugins() {
     gapCursor(),
     tableEditing(),
     highlightPlugin,
+    sincePlugin,
   ];
 }
 
@@ -311,12 +319,74 @@ const view = new EditorView($("#editor"), {
   },
 });
 
+// "Since you last saw it": the snapshot from the previous visit, for this session.
+let sinceBase: Snapshot | null = null;
+let sinceRes: SinceResult | null = null;
+let sinceOn = false;
+let sincePath: string | null = null;
+
+function ago(t: string) {
+  const s = (Date.now() - Date.parse(t)) / 1000;
+  if (!Number.isFinite(s)) return "";
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} days ago`;
+}
+
+function toggleSince(on = !sinceOn) {
+  if (!sinceRes) return toast("No earlier version of this document to compare with yet. docex remembers it from now on.");
+  sinceOn = on;
+  setSince(view, sinceRes.decos, sinceOn);
+  cockpit.rerender();
+  if (sinceOn && sinceRes.spots.length) {
+    const c = view.coordsAtPos(sinceRes.spots[0]);
+    const wrap = $("#page-wrap");
+    wrap.scrollTo({ top: c.top - wrap.getBoundingClientRect().top + wrap.scrollTop - wrap.clientHeight / 3 });
+  }
+}
+
+function sinceChip(): HTMLElement | null {
+  if (!sinceBase || !sinceRes) return null;
+  const { changed, added, removed } = sinceRes;
+  const other = current?.path && sinceBase.path !== current.path ? ` (${sinceBase.name})` : "";
+  const n = changed + added + removed;
+  const b = h("button", { class: `tag since${sinceOn ? " on" : ""}`, onclick: () => toggleSince() }, n ? `since ${ago(sinceBase.taken)}${other}: ${[changed && `${changed} changed`, added && `${added} new`, removed && `${removed} removed`].filter(Boolean).join(", ")}` : `unchanged since ${ago(sinceBase.taken)}${other}`);
+  b.dataset.tip = "What differs from the version you last opened or saved, tracked or not (click: highlight)";
+  return b;
+}
+
+const aiHost: AIHost = { view, author: () => author, toast, index: () => cockpit.index() };
+
+/** A comment on the range of a change (used from triage). */
+async function commentOn(it: Item, text: string) {
+  if (it.from === null) return toast("This change has no place in the text to comment on.");
+  const $f = view.state.doc.resolve(it.from);
+  const p = $f.parent;
+  const end = Math.min(it.to ?? it.from, $f.end());
+  await call("sync", { pending: { pos: $f.before(), start: atomIndex(p, $f.parentOffset), end: atomIndex(p, end - $f.start()), text } });
+}
+
 const cockpit = createCockpit({
   view,
   current: () => current,
   me: () => author,
   call: (cmd, args) => call(cmd, args),
   toast,
+  triage: (items, scope) =>
+    openTriage(items, scope, {
+      show: (it) => cockpit.focus(it, true),
+      apply: (accept, reject, done) => call("resolve_batch", { accept, reject, done_comments: done }),
+      reply: (it, text) => (it.comment ? call("comment_reply", { id: it.comment.id, text }) : commentOn(it, text)),
+      ask: (title) => askText(title, "", true),
+      section: (it) => cockpit.index().sections[it.section]?.title ?? "",
+      done: () => {
+        view.focus();
+        cockpit.refreshNow();
+      },
+    }),
+  summarize: (items, scope) => void summarizeReview(aiHost, items, scope),
+  draft: (it, onText) => draftReply(aiHost, it, onText),
+  sinceChip,
 });
 cockpit.onSectionChange((t) => {
   sectionTitle = t;
@@ -341,6 +411,26 @@ function load(v: View, keepSelection = true) {
   view.updateState(state);
   localDirty = false;
   for (const w of v.warnings) toast(w);
+  // Compare with the previous visit (fetched once per opened file).
+  if (v.path && v.path !== sincePath) {
+    sincePath = v.path;
+    sinceBase = null;
+    sinceRes = null;
+    sinceOn = false;
+    const path = v.path;
+    invoke<Snapshot | null>("snapshot_swap", { path, paras: paraTexts(view.state.doc) })
+      .then((prev) => {
+        if (path !== sincePath || !prev) return;
+        sinceBase = prev;
+        sinceRes = computeSince(view.state.doc, prev);
+        setSince(view, sinceRes.decos, sinceOn);
+        cockpit.rerender();
+      })
+      .catch(() => {});
+  } else if (sinceBase) {
+    sinceRes = computeSince(view.state.doc, sinceBase);
+    setSince(view, sinceRes.decos, sinceOn);
+  }
   cockpit.refreshNow();
   renderStatus();
   updateToolbar();
@@ -389,7 +479,11 @@ async function openFile(path?: string) {
     if (!p) return;
     path = p as string;
   }
-  await call("open_doc", { path }, false);
+  const v = await call("open_doc", { path }, false);
+  if (v?.path) {
+    const recent = [v.path, ...recentFiles().filter((r) => r !== v.path)].slice(0, 12);
+    localStorage.setItem("docex-recent", JSON.stringify(recent));
+  }
   view.focus();
 }
 
@@ -407,7 +501,10 @@ async function saveFile(as = false) {
     if (!path.toLowerCase().endsWith(".docx")) path += ".docx";
   }
   const v = await call("save", { path });
-  if (v) toast(`Saved ${basename(v.path || "")}`);
+  if (v) {
+    toast(`Saved ${basename(v.path || "")}`);
+    if (v.path) void invoke("snapshot_put", { path: v.path, paras: paraTexts(view.state.doc) }).catch(() => {});
+  }
 }
 
 async function toggleTrack() {
@@ -584,6 +681,9 @@ $("#toolbar").append(
   tb(Sigma, "Insert a formula  or type $…$ / $$…$$", () => insertMath()),
   tb(MessageSquarePlus, "Comment on the selected text", addComment),
   tableCtx,
+  sep(),
+  tb(Sparkles, "AI: rewrite, ask, summarize  Ctrl+J", openAIMenu),
+  tb(CommandIcon, "Command palette  Ctrl+P", () => openPalette(paletteEntries())),
   h("span", { class: "grow" }),
   trackSwitch,
   sep(),
@@ -655,9 +755,106 @@ function updateToolbar() {
 }
 
 // ---------------------------------------------------------------------------
+// Command palette and AI menu
+
+function recentFiles(): string[] {
+  try {
+    return JSON.parse(localStorage.getItem("docex-recent") || "[]");
+  } catch {
+    return [];
+  }
+}
+
+function aiEntries(): Entry[] {
+  const hasSel = !view.state.selection.empty;
+  const target = hasSel ? "selection" : "paragraph";
+  return [
+    ...REWRITES.map(([label, instr]) => ({ label: `${label} (${target})`, group: "AI", hint: "tracked", run: () => rewriteSelection(aiHost, instr, label) })),
+    {
+      label: `Rewrite ${target} with your own instruction…`,
+      group: "AI",
+      run: async () => {
+        const instr = await askText(`How should the ${target} change?`);
+        if (instr?.trim()) await rewriteSelection(aiHost, instr.trim(), instr.trim());
+      },
+    },
+    {
+      label: "Ask about this document…",
+      group: "AI",
+      run: async () => {
+        const q = await askText("Ask about this document");
+        if (q?.trim()) await askDocument(aiHost, q.trim());
+      },
+    },
+    { label: "Summarize the changes and comments shown", group: "AI", run: () => summarizeReview(aiHost, cockpit.shown(), "the review list") },
+    { label: "Summarize all changes and comments", group: "AI", run: () => summarizeReview(aiHost, cockpit.index().items, "all changes and comments") },
+    { label: "AI settings (provider, key, model)…", group: "AI", run: () => aiSettingsDialog() },
+  ];
+}
+
+function openAIMenu() {
+  openPalette(aiEntries(), "AI: rewrite, ask, summarize…  (rewrites become tracked changes)");
+}
+
+function paletteEntries(): Entry[] {
+  const idx = cockpit.index();
+  const e: Entry[] = [
+    { label: "Triage what's shown in the review list", group: "Review", hint: "Alt+T", run: () => cockpit.startTriage() },
+    { label: "Triage everything", group: "Review", run: () => { cockpit.clearFilters(); return cockpit.startTriage(); } },
+    { label: "Triage open comment threads", group: "Review", run: () => { cockpit.clearFilters(); cockpit.filterTo({ show: "open" }); return cockpit.startTriage(); } },
+    { label: "Hide formatting / whitespace / punctuation noise", group: "Review", run: () => cockpit.filterTo({ hideNoise: true }) },
+    { label: "Accept all noise (formatting, whitespace, punctuation)", group: "Review", run: () => cockpit.resolve(idx.items.filter((i) => i.noise), true) },
+    { label: "Show only open comment threads", group: "Review", run: () => cockpit.filterTo({ show: "open" }) },
+    { label: "Clear review filters", group: "Review", run: () => cockpit.clearFilters() },
+    { label: `${sinceOn ? "Hide" : "Show"} what changed since I last saw it`, group: "Review", hint: "Alt+S", run: () => toggleSince() },
+    { label: `Track changes: turn ${tracking ? "off" : "on"}`, group: "Command", run: toggleTrack },
+    { label: "Save", group: "Command", hint: "Ctrl+S", run: () => saveFile(false) },
+    { label: "Save as…", group: "Command", hint: "Ctrl+Shift+S", run: () => saveFile(true) },
+    { label: "Open…", group: "Command", hint: "Ctrl+O", run: () => openFile() },
+    { label: "New document", group: "Command", hint: "Ctrl+N", run: newFile },
+    { label: "Toggle outline", group: "View", hint: "Ctrl+1", run: () => togglePanel("outline") },
+    { label: "Toggle review panel", group: "View", hint: "Ctrl+2", run: () => togglePanel("sidebar") },
+    { label: "Insert table", group: "Insert", run: insertTable },
+    { label: "Insert image…", group: "Insert", run: insertImage },
+    { label: "Insert footnote", group: "Insert", run: insertFootnote },
+    { label: "Insert formula", group: "Insert", run: () => insertMath() },
+    { label: "Comment on selection", group: "Insert", run: addComment },
+    ...KINDS.map(([k, label]) => ({ label: `Style: ${label}`, group: "Format", run: () => { setKind(k)(view.state, view.dispatch); view.focus(); } })),
+    ...aiEntries(),
+  ];
+  idx.sections.forEach((s, i) => {
+    if (s.level > 0) e.push({ label: `${"  ".repeat(Math.max(0, s.level - 1))}${s.title}`, group: "Go to", keywords: "section heading", hint: s.changes + s.comments ? `${s.changes}·${s.comments}` : undefined, run: () => cockpit.scrollToSection(i) });
+  });
+  for (const p of idx.people) {
+    const mine = idx.items.filter((i) => i.author === p.name && i.kind !== "comment");
+    e.push({ label: `Show only ${p.name}`, group: "Person", run: () => cockpit.filterTo({ person: p.name }) });
+    if (mine.length) {
+      e.push({ label: `Triage ${p.name}'s changes (${mine.length})`, group: "Person", run: () => { cockpit.clearFilters(); cockpit.filterTo({ person: p.name, show: "changes" }); return cockpit.startTriage(); } });
+      e.push({ label: `Accept all ${mine.length} changes by ${p.name}`, group: "Person", run: () => cockpit.resolve(mine, true) });
+      e.push({ label: `Reject all ${mine.length} changes by ${p.name}`, group: "Person", run: () => cockpit.resolve(mine, false) });
+    }
+  }
+  for (const c of idx.clusters.slice(0, 30)) {
+    const what = `${c.old ? `"${c.old}"` : "∅"} → ${c.new ? `"${c.new}"` : "∅"}`;
+    e.push({ label: `Show ×${c.items.length} ${what}`, group: "Repeated edit", run: () => cockpit.filterTo({ cluster: c.key }) });
+    e.push({ label: `Accept all ×${c.items.length} ${what}`, group: "Repeated edit", run: () => cockpit.resolve(c.items, true) });
+  }
+  for (const r of recentFiles()) if (r !== current?.path) e.push({ label: basename(r), group: "Recent", hint: r.replace(/\/[^/]*$/, ""), run: async () => {
+    if (await confirmDiscard()) await openFile(r);
+  } });
+  return e;
+}
+
+// ---------------------------------------------------------------------------
 // Startup
 
 document.addEventListener("keydown", (e) => {
+  if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key.toLowerCase() === "t" || e.key.toLowerCase() === "s")) {
+    e.preventDefault();
+    if (e.key.toLowerCase() === "t") void cockpit.startTriage();
+    else toggleSince();
+    return;
+  }
   const mod = e.ctrlKey || e.metaKey;
   if (!mod) return;
   const k = e.key.toLowerCase();
@@ -673,6 +870,12 @@ document.addEventListener("keydown", (e) => {
   } else if (k === "1" || k === "2") {
     e.preventDefault();
     togglePanel(k === "1" ? "outline" : "sidebar");
+  } else if (k === "p") {
+    e.preventDefault();
+    openPalette(paletteEntries());
+  } else if (k === "j") {
+    e.preventDefault();
+    openAIMenu();
   }
 });
 document.addEventListener("mousedown", (e) => {

@@ -1,6 +1,9 @@
 // Prevents an additional console window on Windows in release.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ai;
+mod snapshot;
+
 use base64::Engine;
 use docex_core::comments::Comment;
 use docex_core::docmodel::DocModel;
@@ -169,6 +172,35 @@ fn resolve(state: tauri::State<AppState>, model: DocModel, tracked: bool, wids: 
     })
 }
 
+/// Triage: accept and reject many changes (by Word id) in one go.
+#[tauri::command]
+fn resolve_batch(
+    state: tauri::State<AppState>,
+    model: DocModel,
+    tracked: bool,
+    accept: Vec<String>,
+    reject: Vec<String>,
+    done_comments: Vec<String>,
+) -> Result<View, String> {
+    with_session(&state, Some(&model), tracked, |s, _| {
+        let mut n = 0;
+        for id in &done_comments {
+            s.doc.set_comment_done(id, true).map_err(err)?;
+            n += 1;
+        }
+        if !accept.is_empty() {
+            n += s.doc.resolve_wids(&accept, true).map_err(err)?;
+        }
+        if !reject.is_empty() {
+            n += s.doc.resolve_wids(&reject, false).map_err(err)?;
+        }
+        if n > 0 {
+            s.dirty = true;
+        }
+        Ok(())
+    })
+}
+
 #[tauri::command]
 fn resolve_all(state: tauri::State<AppState>, model: DocModel, tracked: bool, accept: bool) -> Result<View, String> {
     with_session(&state, Some(&model), tracked, |s, _| {
@@ -296,6 +328,35 @@ fn image_data(path: String) -> Result<String, String> {
     Ok(data_url(&path, &bytes))
 }
 
+#[tauri::command]
+fn ai_settings() -> ai::SettingsView {
+    ai::view(&ai::load())
+}
+
+#[tauri::command]
+fn ai_settings_set(update: ai::SettingsUpdate) -> Result<ai::SettingsView, String> {
+    Ok(ai::view(&ai::update(update)?))
+}
+
+#[tauri::command]
+async fn ai_complete(app: tauri::AppHandle, req: ai::Request) -> Result<String, String> {
+    ai::complete(app, req).await
+}
+
+/// The previous snapshot for `path` (or for a similar earlier file), then
+/// record `paras` as the new one.
+#[tauri::command]
+fn snapshot_swap(path: String, paras: Vec<String>) -> Option<snapshot::Snapshot> {
+    let prev = snapshot::get(&path).or_else(|| snapshot::similar(&path, &paras));
+    let _ = snapshot::put(&path, paras, now_iso());
+    prev
+}
+
+#[tauri::command]
+fn snapshot_put(path: String, paras: Vec<String>) -> Result<(), String> {
+    snapshot::put(&path, paras, now_iso())
+}
+
 /// Markdown (e.g. pasted text) as a document model fragment.
 #[tauri::command]
 fn md_to_model(md: String) -> DocModel {
@@ -347,6 +408,12 @@ fn main() {
             sync,
             resolve,
             resolve_all,
+            resolve_batch,
+            ai_settings,
+            ai_settings_set,
+            ai_complete,
+            snapshot_swap,
+            snapshot_put,
             comment_reply,
             comment_done,
             comment_delete,

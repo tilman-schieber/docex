@@ -2,6 +2,8 @@
 // and the activity rail next to the page.
 
 import {
+  ListChecks,
+  Sparkles,
   Check,
   ChevronDown,
   ChevronRight,
@@ -27,6 +29,14 @@ export interface App {
   me(): string;
   call(cmd: string, args?: Record<string, unknown>): Promise<View | undefined>;
   toast(msg: string, kind?: "info" | "error"): void;
+  /** Review the given items one by one. */
+  triage(items: Item[], scope: string): void;
+  /** AI summary of the given items. */
+  summarize(items: Item[], scope: string): void;
+  /** AI-drafted reply to a comment thread. */
+  draft(it: Item, onText: (t: string) => void): Promise<string>;
+  /** The "since you last saw it" chip, if there is a baseline. */
+  sinceChip(): HTMLElement | null;
 }
 
 type IconNode = Parameters<typeof createElement>[0];
@@ -74,7 +84,14 @@ export function createCockpit(app: App) {
   const view = app.view;
   const wrap = $("#page-wrap");
   let index: Index = analyze(view.state.doc, null, app.me());
-  const filter = { people: new Set<string>(), show: "all" as "all" | "changes" | "comments" | "open", q: "", section: null as number | null };
+  const filter = {
+    people: new Set<string>(),
+    show: "all" as "all" | "changes" | "comments" | "open",
+    q: "",
+    section: null as number | null,
+    hideNoise: false,
+    cluster: null as string | null,
+  };
   let active: string | null = null;
   let expanded: string | null = null;
   const collapsed = new Set<string>(JSON.parse(localStorage.getItem("docex-collapsed") || "[]"));
@@ -90,6 +107,8 @@ export function createCockpit(app: App) {
     if ((filter.show === "comments" || filter.show === "open") && it.kind !== "comment") return false;
     if (filter.show === "open" && it.comment?.done) return false;
     if (ignore !== "section" && filter.section !== null && !inSubtree(index.sections, filter.section, it.section)) return false;
+    if (filter.hideNoise && it.noise) return false;
+    if (filter.cluster !== null && it.cluster !== filter.cluster) return false;
     if (filter.q) {
       const q = filter.q.toLowerCase();
       const hay = [it.old, it.new, it.text, it.author, it.label, ...(it.replies ?? []).map((r) => r.text)].join(" ").toLowerCase();
@@ -372,7 +391,28 @@ export function createCockpit(app: App) {
           e.stopPropagation();
         };
         const sendBtn = h("button", { class: "ghost", onclick: (e: Event) => { e.stopPropagation(); void send(); } }, icon(CornerDownRight), "Reply");
-        body.append(h("div", { class: "reply-box" }, ta, sendBtn));
+        const draftBtn = h(
+          "button",
+          {
+            class: "ghost",
+            "data-tip": "Let AI draft a reply (you review it before sending)",
+            onclick: async (e: Event) => {
+              e.stopPropagation();
+              draftBtn.disabled = true;
+              try {
+                ta.value = (await app.draft(it, (t) => (ta.value = t))).trim();
+              } catch (err) {
+                app.toast(String(err), "error");
+              } finally {
+                draftBtn.disabled = false;
+                ta.focus();
+              }
+            },
+          },
+          icon(Sparkles),
+          "Draft",
+        ) as HTMLButtonElement;
+        body.append(h("div", { class: "reply-box" }, ta, h("div", { class: "reply-btns" }, sendBtn, draftBtn)));
         setTimeout(() => ta.focus(), 0);
       }
       row.append(avatar(it.author), body, acts);
@@ -423,6 +463,37 @@ export function createCockpit(app: App) {
           )
         : h("span", { class: "muted" }, "No changes or comments. Edit away."),
     );
+    const extras = h("div", { class: "extras" });
+    if (t.noise) {
+      // Noise within the current filter (ignoring the hide-noise switch itself).
+      const hidden = filter.hideNoise;
+      filter.hideNoise = false;
+      const noise = index.items.filter((i) => i.noise && matches(i));
+      filter.hideNoise = hidden;
+      extras.append(
+        h(
+          "button",
+          {
+            class: `tag${filter.hideNoise ? " on" : ""}`,
+            "data-tip": "Formatting-only, whitespace and punctuation changes (click: hide them)",
+            onclick: () => {
+              filter.hideNoise = !filter.hideNoise;
+              renderAll();
+            },
+          },
+          filter.hideNoise ? `${t.noise} noise hidden` : `${t.noise} noise`,
+        ),
+        h(
+          "button",
+          { class: "tag ok", "data-tip": "Accept all formatting, whitespace and punctuation changes", onclick: () => resolve(noise, true) },
+          icon(Check, "ico tiny"),
+          "accept noise",
+        ),
+      );
+    }
+    if (index.clusters.length) extras.append(h("span", { class: "tag plain" }, `${index.clusters.length} repeated edits`));
+    const since = app.sinceChip();
+    if (since) extras.append(since);
     // People.
     const people = h("div", { class: "people" });
     for (const p of index.people) {
@@ -480,15 +551,23 @@ export function createCockpit(app: App) {
     const scope: string[] = [];
     if (filter.people.size) scope.push([...filter.people].map((p) => p.split(/\s+/)[0]).join(", "));
     if (filter.section !== null) scope.push(`§ ${index.sections[filter.section].title}`);
+    if (filter.cluster !== null) {
+      const c = index.clusters.find((x) => x.key === filter.cluster);
+      if (c) scope.push(`"${c.old}" → "${c.new}"`);
+    }
     const changeItems = list.filter((i) => i.kind !== "comment");
     const bulk = h(
       "div",
       { class: "bulk" },
       h("span", { class: "scope" }, scope.length ? `Showing ${list.length} · ${scope.join(" · ")}` : `Showing ${list.length}`),
-      scope.length || filter.q || filter.show !== "all"
-        ? h("button", { class: "clear", "data-tip": "Show everything again", onclick: () => { filter.people.clear(); filter.section = null; filter.q = ""; filter.show = "all"; renderAll(); } }, "clear")
+      scope.length || filter.q || filter.show !== "all" || filter.hideNoise
+        ? h("button", { class: "clear", "data-tip": "Show everything again", onclick: () => { filter.people.clear(); filter.section = null; filter.q = ""; filter.show = "all"; filter.cluster = null; filter.hideNoise = false; renderAll(); } }, "clear")
         : null,
       h("span", { class: "grow" }),
+      list.length
+        ? h("button", { class: "ghost", "data-tip": "Go through these one by one with single keys  T", onclick: () => startTriage() }, icon(ListChecks), "Triage")
+        : null,
+      list.length ? h("button", { class: "ghost", "data-tip": "AI summary of what's shown", onclick: () => app.summarize(list, scopeLabel()) }, icon(Sparkles)) : null,
       changeItems.length
         ? h("button", { class: "ghost ok", "data-tip": "Accept every change listed below", onclick: () => resolve(changeItems, true) }, icon(Check), `Accept ${changeItems.length}`)
         : null,
@@ -498,7 +577,7 @@ export function createCockpit(app: App) {
     );
     const feed = h("div", { class: "feed", id: "feed" });
     el.replaceChildren(
-      h("div", { class: "review-head" }, summary, people, filters, bulk),
+      h("div", { class: "review-head" }, summary, extras.childNodes.length ? extras : "", people, filters, bulk),
       feed,
       h("div", { class: "keys muted" }, "Alt+↑↓ next/prev · Alt+A accept · Alt+R reject"),
     );
@@ -511,6 +590,32 @@ export function createCockpit(app: App) {
     if (!feed) return;
     const list = shown();
     feed.replaceChildren();
+    // Repeated edits first: accept or reject a pattern everywhere at once.
+    const patterns = filter.cluster === null && filter.show !== "comments" && filter.show !== "open" ? index.clusters.filter((c) => c.items.some((i) => matches(i))) : [];
+    if (patterns.length) {
+      feed.append(h("div", { class: "sec-head" }, h("span", { class: "sec-title" }, "Repeated edits"), h("span", { class: "muted" }, String(patterns.length))));
+      for (const c of patterns.slice(0, 12)) {
+        const its = c.items.filter((i) => matches(i));
+        const row = h(
+          "div",
+          { class: "item pattern", onclick: () => { filter.cluster = c.key; renderAll(); } },
+          h("span", { class: "times" }, `×${its.length}`),
+          h(
+            "div",
+            { class: "body" },
+            h("div", { class: "line" }, c.old ? h("del", {}, c.old) : null, c.old && c.new ? h("span", { class: "arrow" }, "→") : null, c.new ? h("ins", {}, c.new) : null),
+            h("div", { class: "meta" }, c.authors.join(", ")),
+          ),
+          h(
+            "div",
+            { class: "acts" },
+            h("button", { class: "act ok", "data-tip": `Accept all ${its.length}`, onclick: (e: Event) => { e.stopPropagation(); void resolve(its, true); } }, icon(Check)),
+            h("button", { class: "act no", "data-tip": `Reject all ${its.length}`, onclick: (e: Event) => { e.stopPropagation(); void resolve(its, false); } }, icon(X)),
+          ),
+        );
+        feed.append(row);
+      }
+    }
     let sec = -2;
     for (const it of list) {
       if (it.section !== sec) {
@@ -671,8 +776,59 @@ export function createCockpit(app: App) {
 
   let onSection: ((title: string) => void) | undefined;
 
+  function scopeLabel() {
+    const parts: string[] = [];
+    if (filter.people.size) parts.push([...filter.people].join(", "));
+    if (filter.section !== null) parts.push(`§ ${index.sections[filter.section].title}`);
+    if (filter.cluster !== null) {
+      const c = index.clusters.find((x) => x.key === filter.cluster);
+      if (c) parts.push(`"${c.old}" → "${c.new}"`);
+    }
+    if (filter.show !== "all") parts.push(filter.show);
+    if (filter.hideNoise) parts.push("without noise");
+    return parts.join(" · ") || "everything";
+  }
+
+  async function startTriage() {
+    // Your unsaved edits need Word ids before they can be decided on.
+    if (index.totals.pending) {
+      await app.call("sync");
+      refreshNow();
+    }
+    const list = shown().filter((i) => !i.pending);
+    if (!list.length) return app.toast("Nothing to triage with the current filter.");
+    app.triage(list, scopeLabel());
+  }
+
   return {
     refreshNow,
+    startTriage,
+    index: () => index,
+    filterTo(f: { person?: string; section?: number; cluster?: string; show?: typeof filter.show; hideNoise?: boolean }) {
+      if (f.person !== undefined) {
+        filter.people.clear();
+        filter.people.add(f.person);
+      }
+      if (f.section !== undefined) filter.section = f.section;
+      if (f.cluster !== undefined) filter.cluster = f.cluster;
+      if (f.show !== undefined) filter.show = f.show;
+      if (f.hideNoise !== undefined) filter.hideNoise = f.hideNoise;
+      renderAll();
+    },
+    clearFilters() {
+      filter.people.clear();
+      filter.section = null;
+      filter.q = "";
+      filter.show = "all";
+      filter.cluster = null;
+      filter.hideNoise = false;
+      renderAll();
+    },
+    shown,
+    scrollToSection,
+    focus: focusItem,
+    resolve,
+    rerender: () => renderReview(),
     refreshSoon,
     focusComment(id: string) {
       const it = index.items.find((i) => i.comment?.id === id);
