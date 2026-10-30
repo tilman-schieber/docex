@@ -302,6 +302,34 @@ try {
     await page.settle();
     check(!(await notice()), "a dismissed version stays hidden");
   });
+
+  await scenario("compare with a version sent back without tracked changes", async () => {
+    const f = scratch(dir, "review.docx");
+    // Their version: the same document, edited directly.
+    const theirs = join(dir, "theirs.docx");
+    execFileSync("cp", [join(root, "tests/fixtures/review.docx"), theirs]);
+    execFileSync(join(root, "target/debug/docex"), ["accept", theirs, "--all", "--no-backup"], { stdio: "ignore" });
+    const md = execFileSync(join(root, "target/debug/docex"), ["cat", theirs], { encoding: "utf8" }).replace("The team completed", "The team finished");
+    writeFileSync(join(dir, "theirs.md"), md);
+    execFileSync(join(root, "target/debug/docex"), ["apply", theirs, join(dir, "theirs.md"), "--untracked"], { stdio: "ignore" });
+    await page.open(f);
+    const count = () => page.eval(`document.querySelectorAll(".ProseMirror ins, .ProseMirror del").length`);
+    const before = await count();
+    await page.eval(`window.__DOCEX_DEV__.openPath = ${JSON.stringify(theirs)}`);
+    await page.key("p", "Control");
+    await page.type("compare with");
+    await page.key("Enter");
+    await page.waitFor(`document.querySelector("#modal:not([hidden]) input")`);
+    await page.type("Bea Other");
+    await page.key("Enter");
+    await page.waitFor(`[...document.querySelectorAll(".ProseMirror ins")].some((e) => e.textContent === "finished" && e.dataset.author === "Bea Other")`);
+    check(await page.eval(`[...document.querySelectorAll(".ProseMirror del")].some((e) => e.textContent === "completed" && e.dataset.author === "Bea Other")`), "the old word should show as deleted by Bea Other");
+    check((await count()) === before + 2, `only the one replacement is new (${before} → ${await count()})`);
+    check((await toast()).includes("by Bea Other, tracked"), `toast: ${await toast()}`);
+    await page.click("#toasts .toast-act", "Undo");
+    await page.settle();
+    check((await count()) === before, "Undo takes the comparison back");
+  });
 } finally {
   await close();
 }

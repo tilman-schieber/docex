@@ -137,6 +137,16 @@ fn ai_apply(state: State<AppState>, model: DocModel, tracked: bool, md: String) 
 }
 
 #[tauri::command]
+fn saved_by(path: String) -> Option<String> {
+    backend::saved_by(path)
+}
+
+#[tauri::command]
+fn compare(state: State<AppState>, model: DocModel, tracked: bool, path: String, author: String) -> Result<View, String> {
+    backend::compare(&state, model, tracked, path, author)
+}
+
+#[tauri::command]
 fn md_to_model(md: String) -> DocModel {
     backend::md_to_model(md)
 }
@@ -295,6 +305,8 @@ fn main() {
             md_to_model,
             ai_source,
             ai_apply,
+            saved_by,
+            compare,
             recovery_put,
             recovery_check,
             recovery_open,

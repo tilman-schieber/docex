@@ -43,6 +43,10 @@ Rules:
 - **Text boxes:** edit the paragraphs between `<!-- docex:textbox tbN -->` and `<!-- /docex:textbox -->`. Leave the marker lines alone.
 - **Content controls** (template fields such as customer or date, cover pages): edit the paragraphs between `<!-- docex:control bN Name -->` and `<!-- /docex:control -->`; leave the markers. Text that is still the placeholder ("Click here to enter text.") is replaced as a whole. Locked controls refuse edits.
 
+## A version sent back without tracked changes
+
+`docex diff MINE.docx THEIRS.docx --into --track` writes THEIRS into MINE as tracked changes (by whoever last saved THEIRS, or `--author`). Both are compared as if their open changes were accepted, so the changes already open in MINE stay. Comments in THEIRS don't come along. Without `--into`, `docex diff` prints the differences.
+
 ## Machine-readable output
 
 - `docex review FILE --json`: summary plus items, as above.

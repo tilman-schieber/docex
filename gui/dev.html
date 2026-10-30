@@ -27,7 +27,7 @@
       // blocks a test.
       const file = new URLSearchParams(location.search).get("file");
       let next = 0;
-      window.__DOCEX_DEV__ = { saveAs: null, calls: [] };
+      window.__DOCEX_DEV__ = { saveAs: null, openPath: null, calls: [] };
       window.__TAURI_INTERNALS__ = {
         metadata: { currentWindow: { label: "main" }, currentWebview: { windowLabel: "main", label: "main" } },
         transformCallback: () => ++next,
@@ -45,6 +45,7 @@
             return b === "YesNo" || b === "YesNoCancel" ? "Yes" : "Ok";
           }
           if (cmd === "plugin:dialog|save") return window.__DOCEX_DEV__.saveAs;
+          if (cmd === "plugin:dialog|open") return window.__DOCEX_DEV__.openPath ?? null;
           if (cmd.startsWith("plugin:")) return null;
           const r = await fetch(`/invoke/${cmd}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(args) });
           const v = await r.json();

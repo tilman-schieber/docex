@@ -435,6 +435,26 @@ const aiHost: AIHost = {
   },
 };
 
+/** Word's Compare: another version of this document (one sent back without
+ *  tracked changes) comes in as tracked changes by whoever saved it. */
+async function compareWith() {
+  const p = await openDialog({ multiple: false, title: "Compare with another version", filters: [{ name: "Word document", extensions: ["docx"] }] });
+  if (!p) return;
+  const path = p as string;
+  if (path === current?.path) return toast("That's the document that is open.", "error");
+  const who = await askText("Whose changes are these?", (await invoke<string | null>("saved_by", { path })) ?? "");
+  if (!who?.trim()) return;
+  const before = (current?.changes.length ?? 0) + (current?.comments.length ?? 0);
+  const v = await call("compare", { path, author: who.trim() });
+  if (!v) return;
+  view.focus();
+  const n = v.changes.length + v.comments.length - before;
+  if (n > 0 && v.can_undo) {
+    reviewLog.recordEdit();
+    toast(`${basename(path)}: ${n} change${n === 1 ? "" : "s"} by ${who.trim()}, tracked.`, "info", { label: "Undo", run: undoReview });
+  } else toast(`${basename(path)} has the same content.`);
+}
+
 const sectionOf = (it: Item) => cockpit.index().sections[it.section]?.title ?? "";
 
 /** "Done reviewing": what you decided, as text to paste into a reply. */
@@ -1123,6 +1143,7 @@ function paletteEntries(): Entry[] {
     { label: "Show only open comment threads", group: "Review", run: () => cockpit.filterTo({ show: "open" }) },
     { label: "Clear review filters", group: "Review", run: () => cockpit.clearFilters() },
     { label: "Done reviewing: summary to paste into a reply", group: "Review", run: showSummary },
+    { label: "Compare with another version…", group: "Review", keywords: "diff merge untracked changes", run: compareWith },
     { label: `Show threads waiting on me (${cockpit.waitingOnMe().length})`, group: "Review", run: () => { cockpit.clearFilters(); cockpit.filterTo({ show: "mine" }); } },
     { label: "Triage threads waiting on me", group: "Review", run: () => { cockpit.clearFilters(); cockpit.filterTo({ show: "mine" }); return cockpit.startTriage(); } },
     { label: `${sinceOn ? "Hide" : "Show"} what changed since I last saw it`, group: "Review", hint: "Alt+S", run: () => toggleSince() },

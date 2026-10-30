@@ -47,6 +47,8 @@ docex review report.docx              # every change and comment thread, by sect
 docex resolve report.docx --accept c4,c9 --reject c7
 docex comment report.docx --on "quoted text" "Please check this"
 docex diff a.docx b.docx              # what changed between two versions
+docex diff mine.docx theirs.docx --into --track   # a version sent back without tracked changes,
+                                                  # as tracked changes by whoever saved it
 docex new notes.md -o notes.docx      # a new document from Markdown
 ```
 
@@ -69,6 +71,7 @@ Its focus is the part of working with Word documents that takes the most time: *
 - **See where the changes are.** An outline shows changes and comments per section; a review feed lists them with context; each person gets a chip, and filtering to one person fades out everyone else's edits.
 - **Decide quickly.** Accept or reject one change, everything by one person, everything in a section, or the same edit made in forty places at once. Triage mode walks through them one at a time with single keys. Every decision can be undone.
 - **Keep track.** A progress bar shows how much you've reviewed; when you're done, docex writes a summary of what you took and what you didn't to paste into your reply. A tab lists the comment threads waiting on you.
+- **Compare with another version.** When someone sends the document back without tracking their changes, docex writes their version into yours as tracked changes in their name, next to the changes already open.
 - **What's new since last time.** docex remembers each version you've seen and highlights what's different, even when the others didn't track their changes.
 - **Write as well as review.** Markdown shortcuts while typing, equations, find and replace, spell checking.
 - **An AI assistant that edits the document, not just the words.** It works on the same Markdown view as the CLI, so it can add real links, bold or highlight, turn paragraphs into headings or lists, edit tables and leave comments, on the selection or across the whole document. Everything comes back as tracked changes in your name, and one Undo takes it back.

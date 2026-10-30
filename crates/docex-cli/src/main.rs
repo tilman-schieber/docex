@@ -176,7 +176,9 @@ enum Cmd {
     Diff {
         a: PathBuf,
         b: PathBuf,
-        /// Write B's content into A (to -o, or in place); tracked per A's setting or --track/--untracked.
+        /// Write B's content into A (to -o, or in place): Word's Compare. Tracked
+        /// per A's setting or --track/--untracked; the changes are by whoever last
+        /// saved B unless --author says otherwise.
         #[arg(long)]
         into: bool,
         #[command(flatten)]
@@ -500,8 +502,14 @@ fn main() -> Result<()> {
             let db = Docx::open(&b)?;
             if into {
                 let mut da = da;
-                // B's placeholders don't correspond to A's blocks: keep A's.
-                apply_and_save(&mut da, &a, &db.render(View::Accepted), Path::new("."), &w, true)?;
+                let tracked = if w.track { true } else if w.untracked { false } else { da.track_changes()? };
+                let who = w.author.clone().or_else(|| db.last_modified_by()).unwrap_or_else(|| author(None));
+                let opts = ApplyOpts { author: who, date: now_iso(), tracked, base_dir: None, keep_opaque: true };
+                let report = da.compare_with(&db, &opts)?;
+                print_report(&report, opts.tracked);
+                if da.is_dirty() {
+                    save(&mut da, &a, &w.out)?;
+                }
             } else {
                 let ta = da.render(View::Accepted);
                 let tb = db.render(View::Accepted);

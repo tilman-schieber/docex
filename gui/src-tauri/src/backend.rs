@@ -10,7 +10,7 @@ use docex_core::revisions::Change;
 use docex_core::{now_iso, ApplyOpts, Docx};
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
@@ -461,6 +461,31 @@ pub fn ai_apply(state: &AppState, model: DocModel, tracked: bool, md: String) ->
         let snap = s.doc.to_bytes().map_err(err)?;
         let opts = ApplyOpts { author, date: now_iso(), tracked: true, base_dir: None, keep_opaque: true };
         let r = s.doc.apply(&md, &opts).map_err(err)?;
+        warnings.extend(r.warnings.iter().cloned());
+        if r.changed() {
+            s.dirty = true;
+            s.undo.push(snap);
+            if s.undo.len() > UNDO_DEPTH {
+                s.undo.remove(0);
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Who saved `path` last, as Word records it (to name the changes a comparison makes).
+pub fn saved_by(path: String) -> Option<String> {
+    Docx::open(Path::new(&path)).ok()?.last_modified_by()
+}
+
+/// Write another version of the document into the open one as tracked
+/// changes by `author` (Word's Compare); undoable like a review decision.
+pub fn compare(state: &AppState, model: DocModel, tracked: bool, path: String, author: String) -> Result<View, String> {
+    let other = Docx::open(Path::new(&path)).map_err(err)?;
+    with_session(state, Some(&model), tracked, |s, warnings| {
+        let snap = s.doc.to_bytes().map_err(err)?;
+        let opts = ApplyOpts { author, date: now_iso(), tracked: true, base_dir: None, keep_opaque: true };
+        let r = s.doc.compare_with(&other, &opts).map_err(err)?;
         warnings.extend(r.warnings.iter().cloned());
         if r.changed() {
             s.dirty = true;

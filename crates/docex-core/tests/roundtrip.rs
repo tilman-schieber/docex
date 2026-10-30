@@ -946,3 +946,82 @@ fn format_changes_are_placed_in_the_text() {
     let json = serde_json::to_string(&m).unwrap();
     assert!(json.contains("\"fmt\":") && json.contains("\"pfmt\":"), "model lacks format change ids");
 }
+
+/// `docx` with `cp:lastModifiedBy` set in its document properties.
+fn saved_by(d: &mut Docx, who: &str) -> Docx {
+    let mut zin = zip::ZipArchive::new(std::io::Cursor::new(d.to_bytes().unwrap())).unwrap();
+    let mut zout = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let opts = zip::write::SimpleFileOptions::default();
+    for i in 0..zin.len() {
+        let mut f = zin.by_index(i).unwrap();
+        let name = f.name().unwrap().to_string();
+        let mut data = Vec::new();
+        f.read_to_end(&mut data).unwrap();
+        if name == "docProps/core.xml" {
+            let s = String::from_utf8(data).unwrap();
+            data = s.replace("</cp:coreProperties>", &format!("<cp:lastModifiedBy>{who}</cp:lastModifiedBy></cp:coreProperties>")).into_bytes();
+        }
+        zout.start_file(name, opts).unwrap();
+        zout.write_all(&data).unwrap();
+    }
+    Docx::from_bytes(zout.finish().unwrap().into_inner()).unwrap()
+}
+
+#[test]
+fn compare_writes_the_other_version_in_as_tracked_changes() {
+    let mut a = fixture("rich.docx");
+    // B: the same document, edited without tracking by someone else, with a new picture.
+    let mut b = fixture("rich.docx");
+    let md = b.render(View::Review).replace("First goal", "First and main goal") + "\n![New picture](red.png)\n";
+    b.apply(&md, &ApplyOpts { base_dir: Some(fixtures_path("")), ..opts(false) }).unwrap();
+    let b = saved_by(&mut b, "Bea Other");
+    assert_eq!(b.last_modified_by().as_deref(), Some("Bea Other"));
+
+    let who = b.last_modified_by().unwrap();
+    a.compare_with(&b, &ApplyOpts { author: who, ..opts(true) }).unwrap();
+    let a = reopen(&mut a);
+    let rv = a.review();
+    assert!(rv.items.iter().all(|i| i.author == "Bea Other"), "{:?}", rv.items.iter().map(|i| &i.author).collect::<Vec<_>>());
+    let md = a.render(View::Review);
+    assert!(md.contains("First {++and main ++}goal"), "{md}");
+    let pic = md.lines().find(|l| l.contains("{++![") && l.contains("media/")).unwrap_or_else(|| panic!("new picture missing:\n{md}"));
+    // The picture's bytes made it into A's package.
+    let dir = std::env::temp_dir().join(format!("docex-compare-test-{}", std::process::id()));
+    a.extract_media(&dir).unwrap();
+    let path = pic.split('(').nth(1).unwrap().trim_end_matches(")++}");
+    assert_eq!(std::fs::read(dir.join(path)).unwrap(), std::fs::read(fixtures_path("red.png")).unwrap());
+    let _ = std::fs::remove_dir_all(&dir);
+    // Nothing else changed.
+    assert_eq!(a.render(View::Original), fixture("rich.docx").render(View::Original));
+}
+
+fn fixtures_path(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures").join(name)
+}
+
+#[test]
+fn compare_leaves_open_changes_alone() {
+    let mut a = fixture("review.docx");
+    let before = a.review().items.len();
+    // Theirs: every open change accepted, then one real edit, untracked.
+    let mut b = fixture("review.docx");
+    b.resolve_changes(&[], None, true).unwrap();
+    let md = b.render(View::Review).replace("The team completed the data pipeline", "The team finished the data pipeline");
+    assert!(md.contains("finished"));
+    b.apply(&md, &opts(false)).unwrap();
+    let b = reopen(&mut b);
+
+    a.compare_with(&b, &ApplyOpts { author: "Bea Other".into(), ..opts(true) }).unwrap();
+    let a = reopen(&mut a);
+    let rv = a.review();
+    let new: Vec<_> = rv.items.iter().filter(|i| i.author == "Bea Other").collect();
+    assert_eq!(new.len(), 1, "{new:#?}");
+    assert_eq!((new[0].old.as_deref(), new[0].new.as_deref()), (Some("completed"), Some("finished")), "{new:#?}");
+    assert_eq!(rv.items.len() - 1, before, "the open changes stay");
+    // Accepting everything gives their version.
+    assert_eq!(docex_core::compare::accepted_text(&a.render(View::Review)), docex_core::compare::accepted_text(&b.render(View::Review)));
+    // The same version again: nothing to do.
+    let mut a2 = fixture("review.docx");
+    let report = a2.compare_with(&fixture("review.docx"), &opts(true)).unwrap();
+    assert!(!report.changed());
+}

@@ -66,6 +66,8 @@ fn dispatch(st: &AppState, cmd: &str, a: &Value) -> Result<Value, String> {
         "set_author" => to(backend::set_author(st, arg(a, "name")?)),
         "ai_source" => to(backend::ai_source(st, arg(a, "model")?, arg(a, "tracked")?, arg(a, "marked")?)?),
         "ai_apply" => to(backend::ai_apply(st, arg(a, "model")?, arg(a, "tracked")?, arg(a, "md")?)?),
+        "saved_by" => to(backend::saved_by(arg(a, "path")?)),
+        "compare" => to(backend::compare(st, arg(a, "model")?, arg(a, "tracked")?, arg(a, "path")?, arg(a, "author")?)?),
         // Tests script the AI's answer: the file named by DOCEX_FAKE_AI.
         "ai_complete" => match std::env::var("DOCEX_FAKE_AI") {
             Ok(p) => std::fs::read_to_string(p).map(Value::String).map_err(|e| e.to_string()),

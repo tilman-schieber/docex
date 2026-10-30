@@ -3,6 +3,7 @@
 
 pub mod charts;
 pub mod comments;
+pub mod compare;
 pub mod docmodel;
 pub mod math;
 pub mod mdparse;
@@ -1185,6 +1186,35 @@ impl Docx {
             n += 1;
         }
         Ok(n)
+    }
+
+    /// Who saved the document last (Word's "Last modified by"), else who created it.
+    pub fn last_modified_by(&self) -> Option<String> {
+        let core = self.pkg.read_xml_opt("docProps/core.xml").ok()??;
+        ["cp:lastModifiedBy", "dc:creator"]
+            .iter()
+            .filter_map(|k| core.root.child(k))
+            .map(|e| e.text_content().trim().to_string())
+            .find(|t| !t.is_empty())
+    }
+
+    /// Write `other`'s content into this document, as tracked changes when
+    /// `opts.tracked` (what Word calls Compare). Both versions are compared
+    /// as if their open changes were accepted; the changes open here stay,
+    /// and only the differences become new edits. Comments in `other` don't
+    /// come along, its new pictures do. Blocks docex can't edit stay as they
+    /// are here.
+    pub fn compare_with(&mut self, other: &Docx, opts: &Opts) -> Result<Report> {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("docex-compare-{}-{n}", std::process::id()));
+        let report = other.extract_media(&dir).and_then(|_| {
+            let opts = Opts { author: opts.author.clone(), date: opts.date.clone(), tracked: opts.tracked, base_dir: Some(dir.clone()), keep_opaque: true };
+            let theirs = compare::accepted_text(&other.render(View::Review));
+            self.apply(&compare::merge(&self.render(View::Review), &theirs), &opts)
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        report
     }
 
     pub fn is_dirty(&self) -> bool {
