@@ -1,5 +1,8 @@
 # docex
 
+[![release](https://github.com/tilman-schieber/docex/actions/workflows/release.yml/badge.svg)](https://github.com/tilman-schieber/docex/actions/workflows/release.yml)
+[![latest release](https://img.shields.io/github/v/release/tilman-schieber/docex)](https://github.com/tilman-schieber/docex/releases/latest)
+
 Word documents are where a lot of real work happens: contracts, reports, proposals, anything that goes back and forth between people with tracked changes and comments. docex lets you work on that content in plain text, from the terminal, an editor of your choice, a desktop app or an AI agent, without anyone on the other side noticing that you never opened Word.
 
 The idea is simple: **the .docx stays the source of truth.** docex shows you the document as Markdown, you change what you want, and docex writes only those changes back into the original file, as Word's own tracked changes and comments under your name. Everything it doesn't touch (styles, layout, fields, headers, whatever else is in there) stays exactly as it was. Your colleagues get back the same document, with your edits in it, and review them in Word as usual.
