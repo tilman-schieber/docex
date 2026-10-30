@@ -1,6 +1,6 @@
 # Builds the desktop app and the command line for Linux, macOS and Windows
 # and publishes them as a GitHub release. Push a tag (git tag v0.2.0 &&
-# git push origin v0.2.0).
+# git push origin v0.2.0). Started by hand, it only builds.
 name: release
 
 on:
@@ -25,9 +25,9 @@ jobs:
             name: windows-x86_64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -56,17 +56,18 @@ jobs:
           shopt -s nullglob
           for f in target/release/bundle/{deb/*.deb,rpm/*.rpm,appimage/*.AppImage,dmg/*.dmg,msi/*.msi,nsis/*.exe}; do cp "$f" out/; done
           ls -l out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
           path: out/*
 
   release:
     needs: build
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -75,5 +76,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${GITHUB_REF_NAME}"
-          if [ "$GITHUB_REF_TYPE" != tag ]; then tag="nightly-$(date +%Y%m%d)-${GITHUB_SHA::7}"; fi
           gh release create "$tag" dist/* --generate-notes --target "$GITHUB_SHA" --title "docex $tag"
