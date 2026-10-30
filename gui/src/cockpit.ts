@@ -839,8 +839,12 @@ export function createCockpit(app: App) {
     }
     const keep = [...filter.people].map((p) => CSS.escape(p));
     const ids = index.items.filter((i) => i.comment && filter.people.has(i.author)).map((i) => CSS.escape(i.comment!.id));
+    // Formatting changes carry only their Word id: keep the focused people's.
+    const fmt = index.items.filter((i) => i.kind === "format" && filter.people.has(i.author)).flatMap((i) => i.wids).map((w) => CSS.escape(w));
     style.textContent =
       `.ProseMirror ins.chg, .ProseMirror del.chg { opacity: .32; }\n` +
+      `.ProseMirror .fmtchg, .ProseMirror .pfmtchg { text-decoration-color: transparent; box-shadow: none; }\n` +
+      (fmt.length ? fmt.map((w) => `.ProseMirror .fmtchg[data-wid="${w}"]`).join(",\n") + ` { text-decoration-color: var(--magenta); }\n` + fmt.map((w) => `.ProseMirror .pfmtchg[data-wid="${w}"]`).join(",\n") + ` { box-shadow: -10px 0 0 -7px var(--magenta); }\n` : "") +
       `.ProseMirror .cmt { background: none; border-bottom-color: transparent; }\n` +
       keep.map((p) => `.ProseMirror ins[data-author="${p}"], .ProseMirror del[data-author="${p}"]`).join(",\n") +
       ` { opacity: 1; }\n` +
