@@ -459,11 +459,17 @@ fn inline(p: &Para, mode: Mode, cx: &RenderCtx) -> Option<String> {
                     What::Obj { key, node } if key.starts_with("img:") => image_alt(node),
                     _ => String::new(),
                 };
+                let key = it.key().unwrap();
+                let mut marks = if mode.code { Marks::default() } else { p.marks(it) };
+                // Note references are always raised; that's not formatting.
+                if key.starts_with("fn:") {
+                    (marks.sup, marks.sub) = (false, false);
+                }
                 toks.push(Tok::Atom {
-                    key: it.key().unwrap(),
+                    key,
                     st: if review { st } else { Status::Plain },
                     link: if mode.code { None } else { p.link(it).map(String::from) },
-                    marks: if mode.code { Marks::default() } else { p.marks(it) },
+                    marks,
                     alt,
                     wid: if cx.ids && st != Status::Plain {
                         it.ctx
@@ -584,17 +590,32 @@ impl Writer {
             return;
         }
         let code = marks.code && !self.mode.code;
-        let mut open = String::new();
-        if marks.bold && !self.mode.code {
-            open.push_str("**");
+        // Opening and closing markup, closed in reverse order.
+        let mut wrap: Vec<(String, String)> = Vec::new();
+        if !self.mode.code {
+            let mut add = |on: bool, open: &str, close: &str| {
+                if on {
+                    wrap.push((open.to_string(), close.to_string()));
+                }
+            };
+            add(marks.bold, "**", "**");
+            add(marks.italic, "*", "*");
+            add(marks.strike, "~~", "~~");
+            add(marks.underline, "<u>", "</u>");
+            add(marks.sup, "<sup>", "</sup>");
+            add(marks.sub && !marks.sup, "<sub>", "</sub>");
+            if marks.highlight != 0 {
+                let name = crate::model::HIGHLIGHTS.get(marks.highlight as usize).copied().unwrap_or("yellow");
+                let open = if name == "yellow" { "<mark>".to_string() } else { format!("<mark data-color=\"{name}\">") };
+                wrap.push((open, "</mark>".into()));
+            }
+            if let Some(c) = marks.color {
+                wrap.push((format!("<span style=\"color:#{c:06X}\">"), "</span>".into()));
+            }
         }
-        if marks.italic && !self.mode.code {
-            open.push('*');
+        for (o, _) in &wrap {
+            self.out.push_str(o);
         }
-        if marks.strike && !self.mode.code {
-            open.push_str("~~");
-        }
-        self.out.push_str(&open);
         if code {
             // Objects can't live inside code spans; split around them.
             let mut buf = String::new();
@@ -610,7 +631,9 @@ impl Writer {
         } else {
             self.atoms(core, true);
         }
-        self.out.push_str(&open.chars().rev().collect::<String>());
+        for (_, c) in wrap.iter().rev() {
+            self.out.push_str(c);
+        }
         self.atoms(&seg[seg.len() - trail..], false);
     }
 

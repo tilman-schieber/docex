@@ -37,6 +37,13 @@ const OBJ_LABELS: Record<string, string> = {
   "<!--docex:sym-->": "symbol",
 };
 
+/** Word's highlighter colours by name. */
+export const HIGHLIGHT_CSS: Record<string, string> = {
+  yellow: "#ffff00", green: "#00ff00", cyan: "#00ffff", magenta: "#ff00ff", blue: "#0000ff", red: "#ff0000",
+  darkBlue: "#000080", darkCyan: "#008080", darkGreen: "#008000", darkMagenta: "#800080", darkRed: "#800000",
+  darkYellow: "#808000", darkGray: "#808080", lightGray: "#c0c0c0", black: "#000000", white: "#ffffff",
+};
+
 const changeAttrs = { author: { default: "" }, date: { default: "" }, wid: { default: "" } };
 
 function changeTitle(kind: string, m: Mark): string {
@@ -176,6 +183,20 @@ export const schema = new Schema({
     em: { parseDOM: [{ tag: "em" }, { tag: "i" }], toDOM: () => ["em", 0] },
     strike: { parseDOM: [{ tag: "s" }], toDOM: () => ["s", 0] },
     code: { parseDOM: [{ tag: "code" }], toDOM: () => ["code", 0] },
+    underline: { parseDOM: [{ tag: "u" }], toDOM: () => ["u", 0] },
+    sup: { excludes: "sub", parseDOM: [{ tag: "sup" }], toDOM: () => ["sup", 0] },
+    sub: { excludes: "sup", parseDOM: [{ tag: "sub" }], toDOM: () => ["sub", 0] },
+    /** Word's highlighter; `color` is its name ("yellow", "darkGreen", ...). */
+    highlight: {
+      attrs: { color: { default: "yellow" } },
+      parseDOM: [{ tag: "mark", getAttrs: (d) => ({ color: (d as HTMLElement).dataset.color || "yellow" }) }],
+      toDOM: (m) => ["mark", { class: "marker", "data-color": m.attrs.color, style: `--hl:${HIGHLIGHT_CSS[m.attrs.color] ?? "#ffff00"}` }, 0],
+    },
+    /** Font colour, "#RRGGBB" (only real colours; the core ignores greys). */
+    color: {
+      attrs: { color: {} },
+      toDOM: (m) => ["span", { class: "fc", style: `--fc:${m.attrs.color}` }, 0],
+    },
     link: {
       attrs: { href: {} },
       inclusive: false,

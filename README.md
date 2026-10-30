@@ -53,6 +53,9 @@ Files are changed in place with a `FILE.docx~` backup. Use `-o OUT.docx` to writ
 | Bulleted / numbered lists (nested) | `-` / `1.` (Word's own numbers, "3.2", "(b)", "iv.", with `cat --numbers`) |
 | Quote, code styles | `>` / fenced code |
 | Bold, italic, strikethrough, code | `**b**`, `*i*`, `~~s~~`, `` `c` `` |
+| Underline, superscript, subscript | `<u>…</u>`, `<sup>…</sup>`, `<sub>…</sub>` (also LibreOffice's raised / lowered text) |
+| Highlighter (or text shading) | `<mark>…</mark>` (yellow), `<mark data-color="green">…</mark>` |
+| Font colour (real colours; black and greys are ignored) | `<span style="color:#C00000">…</span>` |
 | Hyperlinks | `[text](url)` |
 | Simple tables | pipe tables (`<br>` separates paragraphs in a cell) |
 | Tables with merged cells | HTML `<table>` with `colspan` / `rowspan`, one cell per line |
@@ -90,7 +93,7 @@ Tables without merged cells are pipe tables. A table with merged cells becomes a
 
 Cell content is ordinary docex Markdown (formatting, links, `$math$`, CriticMarkup, comments); `<br>` separates paragraphs in a cell. In either form you can edit text, add and remove rows and columns, and in the HTML form merge and split cells by changing `colspan` / `rowspan` and the cells around them. Edited cells keep their shading, borders and widths; column widths are redistributed so the table keeps its total width. Text edits and added or removed rows are tracked changes. Merging, splitting and adding or removing columns are applied directly, with a warning, since Word has no tracked form for them. Only tables with nested tables or content controls stay read-only.
 
-Things deliberately left out: spacing, fonts, colours, page layout. New text takes on the formatting of the text around it, and new paragraphs copy the nearest paragraph of the same kind, so additions look native in Word.
+Things deliberately left out: spacing, fonts, font sizes, page layout. New text takes on the formatting of the text around it, and new paragraphs copy the nearest paragraph of the same kind, so additions look native in Word.
 
 ## GUI
 

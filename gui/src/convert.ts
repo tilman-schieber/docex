@@ -12,6 +12,11 @@ function spanMarks(s: Span): Mark[] {
   if (s.i) out.push(marks.em.create());
   if (s.s) out.push(marks.strike.create());
   if (s.c) out.push(marks.code.create());
+  if (s.u) out.push(marks.underline.create());
+  if (s.sup) out.push(marks.sup.create());
+  else if (s.sub) out.push(marks.sub.create());
+  if (s.hl) out.push(marks.highlight.create({ color: s.hl }));
+  if (s.color) out.push(marks.color.create({ color: s.color }));
   if (s.link) out.push(marks.link.create({ href: s.link }));
   if (s.st === "ins" || s.st === "del") {
     out.push(marks[s.st].create({ author: s.author || "", date: s.date || "", wid: s.wid || "" }));
@@ -102,6 +107,11 @@ function inlineSpans(p: PMNode): Span[] {
       else if (m.type === marks.em) s.i = true;
       else if (m.type === marks.strike) s.s = true;
       else if (m.type === marks.code) s.c = true;
+      else if (m.type === marks.underline) s.u = true;
+      else if (m.type === marks.sup) s.sup = true;
+      else if (m.type === marks.sub) s.sub = true;
+      else if (m.type === marks.highlight) s.hl = m.attrs.color;
+      else if (m.type === marks.color) s.color = m.attrs.color;
       else if (m.type === marks.link) s.link = m.attrs.href;
       else if (m.type === marks.ins) s.st = "ins";
       else if (m.type === marks.del) s.st = "del";

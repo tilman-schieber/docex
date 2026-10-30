@@ -2,9 +2,9 @@
 //! each item tied back to the XML it came from so edits can be patched in.
 
 use crate::package::Rels;
-use std::collections::HashMap;
 use crate::styles::{Kind, Styles};
 use crate::xml::{Element, Node};
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct Marks {
@@ -12,6 +12,47 @@ pub struct Marks {
     pub italic: bool,
     pub strike: bool,
     pub code: bool,
+    pub underline: bool,
+    pub sup: bool,
+    pub sub: bool,
+    /// Highlighter colour: index into [`HIGHLIGHTS`] (0 = none).
+    pub highlight: u8,
+    /// Font colour (RGB), only for real colours: black, greys and "auto"
+    /// count as no colour.
+    pub color: Option<u32>,
+}
+
+/// Word's highlighter colours (`w:highlight`), index 0 = none.
+pub const HIGHLIGHTS: [&str; 17] = [
+    "", "yellow", "green", "cyan", "magenta", "blue", "red", "darkBlue", "darkCyan", "darkGreen", "darkMagenta",
+    "darkRed", "darkYellow", "darkGray", "lightGray", "black", "white",
+];
+
+/// The highlighter colour nearest to a background fill (`w:shd`), for text
+/// shaded instead of highlighted; 0 for none, white or "auto".
+pub fn shading_highlight(fill: &str) -> u8 {
+    let Some(v) = u32::from_str_radix(fill, 16).ok().filter(|_| fill.len() == 6 && !fill.eq_ignore_ascii_case("FFFFFF")) else { return 0 };
+    const RGB: [u32; 16] = [
+        0xFFFF00, 0x00FF00, 0x00FFFF, 0xFF00FF, 0x0000FF, 0xFF0000, 0x000080, 0x008080, 0x008000, 0x800080, 0x800000,
+        0x808000, 0x808080, 0xC0C0C0, 0x000000, 0xFFFFFF,
+    ];
+    let d = |a: u32, b: u32| (0..3).map(|k| (((a >> (8 * k)) & 255) as i64 - ((b >> (8 * k)) & 255) as i64).pow(2)).sum::<i64>();
+    (0..16).min_by_key(|&i| d(v, RGB[i])).map(|i| i as u8 + 1).unwrap_or(0)
+}
+
+pub fn highlight_index(name: &str) -> u8 {
+    HIGHLIGHTS.iter().position(|h| !h.is_empty() && h.eq_ignore_ascii_case(name)).unwrap_or(0) as u8
+}
+
+/// A `w:color` value as RGB if it is a colour someone chose (red, blue, ...),
+/// not black, grey or white.
+pub fn real_color(hex: &str) -> Option<u32> {
+    if hex.len() != 6 {
+        return None;
+    }
+    let v = u32::from_str_radix(hex, 16).ok()?;
+    let (r, g, b) = ((v >> 16) & 255, (v >> 8) & 255, v & 255);
+    (r.max(g).max(b) - r.min(g).min(b) >= 64).then_some(v)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -325,6 +366,10 @@ const MONO_FONTS: &[&str] = &[
     "jetbrains mono", "cascadia code", "cascadia mono",
 ];
 
+fn position(rpr: &Element) -> i32 {
+    rpr.child("w:position").and_then(|p| p.attr("w:val")?.parse().ok()).unwrap_or(0)
+}
+
 pub fn marks_of(rpr: Option<&Element>, styles: &Styles) -> Marks {
     let Some(rpr) = rpr else { return Marks::default() };
     let mut m = Marks {
@@ -332,6 +377,16 @@ pub fn marks_of(rpr: Option<&Element>, styles: &Styles) -> Marks {
         italic: toggle_on(rpr.child("w:i")),
         strike: toggle_on(rpr.child("w:strike")) || toggle_on(rpr.child("w:dstrike")),
         code: false,
+        underline: rpr.child("w:u").and_then(|u| u.attr("w:val")).is_some_and(|v| v != "none"),
+        // Raised / lowered: Word's superscript, or a raised position (LibreOffice).
+        sup: rpr.child("w:vertAlign").and_then(|v| v.attr("w:val")) == Some("superscript") || position(rpr) > 0,
+        sub: rpr.child("w:vertAlign").and_then(|v| v.attr("w:val")) == Some("subscript") || position(rpr) < 0,
+        // The highlighter, or text shading used as one.
+        highlight: match rpr.child("w:highlight").and_then(|h| h.attr("w:val")).map(highlight_index) {
+            Some(h) if h != 0 => h,
+            _ => rpr.child("w:shd").and_then(|s| s.attr("w:fill")).map(shading_highlight).unwrap_or(0),
+        },
+        color: rpr.child("w:color").and_then(|c| c.attr("w:val")).and_then(real_color),
     };
     if let Some(st) = rpr.child("w:rStyle").and_then(|s| s.attr("w:val")) {
         let name = styles.name_of(st).unwrap_or(st).to_lowercase();

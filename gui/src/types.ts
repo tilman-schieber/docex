@@ -8,6 +8,13 @@ export interface Span {
   i?: boolean;
   s?: boolean;
   c?: boolean;
+  u?: boolean;
+  sup?: boolean;
+  sub?: boolean;
+  /** Highlighter colour, Word's name ("yellow", "green", ...). */
+  hl?: string;
+  /** Font colour, "#RRGGBB". */
+  color?: string;
   link?: string;
   st?: "ins" | "del";
   author?: string;

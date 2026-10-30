@@ -3,7 +3,7 @@
 
 use crate::comments::text_el;
 use crate::mdparse::{atoms_key, EAtom, EBlock, ECell, EComment, EPara, ETable};
-use crate::model::{marks_of, Block, Marks, Para, Status, Table, VMerge, What, WrapKind};
+use crate::model::{marks_of, Block, Marks, Para, Status, Table, VMerge, What, WrapKind, HIGHLIGHTS};
 use crate::package::Rels;
 use crate::styles::{Kind, Styles};
 use crate::xml::{Document, Element, Node};
@@ -808,6 +808,37 @@ pub fn set_marks(rpr: Option<&Element>, marks: Marks, link: bool, styles: &Style
         }
     } else if !marks.code && cur3.code {
         r.remove_children("w:rFonts");
+    }
+    // Underline, raised/lowered, highlighter and colour: only what differs.
+    let cur = marks_of(Some(&r), styles);
+    if marks.underline != cur.underline {
+        if marks.underline {
+            r.insert_ordered(Element::new("w:u").with_attr("w:val", "single"), RPR_ORDER);
+        } else {
+            r.remove_children("w:u");
+        }
+    }
+    if (marks.sup, marks.sub) != (cur.sup, cur.sub) {
+        r.remove_children("w:position");
+        match (marks.sup, marks.sub) {
+            (true, _) => r.insert_ordered(Element::new("w:vertAlign").with_attr("w:val", "superscript"), RPR_ORDER),
+            (_, true) => r.insert_ordered(Element::new("w:vertAlign").with_attr("w:val", "subscript"), RPR_ORDER),
+            _ => r.remove_children("w:vertAlign"),
+        }
+    }
+    if marks.highlight != cur.highlight {
+        // Shading that stood in for a highlight goes with it.
+        r.remove_children("w:shd");
+        match HIGHLIGHTS.get(marks.highlight as usize).filter(|h| !h.is_empty()) {
+            Some(h) => r.insert_ordered(Element::new("w:highlight").with_attr("w:val", *h), RPR_ORDER),
+            None => r.remove_children("w:highlight"),
+        }
+    }
+    if marks.color != cur.color {
+        match marks.color {
+            Some(c) => r.insert_ordered(Element::new("w:color").with_attr("w:val", format!("{c:06X}")), RPR_ORDER),
+            None => r.remove_children("w:color"),
+        }
     }
     if r.children.is_empty() { None } else { Some(r) }
 }

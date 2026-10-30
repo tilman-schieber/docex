@@ -129,6 +129,10 @@ pub fn atoms_key(atoms: &[EAtom]) -> String {
             Status::Del => '\u{6}',
         });
         s.push(char::from(b'a' + (a.marks.bold as u8) + 2 * (a.marks.italic as u8) + 4 * (a.marks.strike as u8) + 8 * (a.marks.code as u8)));
+        let m = &a.marks;
+        if m.underline || m.sup || m.sub || m.highlight != 0 || m.color.is_some() {
+            s.push_str(&format!("{}{}{}{}{:?}", m.underline as u8, m.sup as u8, m.sub as u8, m.highlight, m.color));
+        }
         if let Some(l) = &a.link {
             s.push_str(l);
         }
@@ -323,11 +327,25 @@ fn scan(src: &str, st: &mut Critic, out: &mut String, fenced: bool) {
     }
 }
 
+/// What a `<span>` opened, so `</span>` closes the right thing.
+enum SpanKind {
+    Color,
+    Other,
+}
+
 #[derive(Default)]
 struct Inline {
     bold: u32,
     italic: u32,
     strike: u32,
+    underline: u32,
+    sup: u32,
+    sub: u32,
+    /// Open `<mark>`s: highlighter colour indices.
+    marker: Vec<u8>,
+    /// Open colour spans.
+    color: Vec<u32>,
+    spans: Vec<SpanKind>,
     link: Vec<String>,
     st: Vec<Status>,
     sub_second: bool,
@@ -441,7 +459,17 @@ impl P {
     }
 
     fn marks(&self, code: bool) -> Marks {
-        Marks { bold: self.inl.bold > 0, italic: self.inl.italic > 0, strike: self.inl.strike > 0, code }
+        Marks {
+            bold: self.inl.bold > 0,
+            italic: self.inl.italic > 0,
+            strike: self.inl.strike > 0,
+            code,
+            underline: self.inl.underline > 0,
+            sup: self.inl.sup > 0,
+            sub: self.inl.sub > 0,
+            highlight: self.inl.marker.last().copied().unwrap_or(0),
+            color: self.inl.color.last().copied(),
+        }
     }
 
     fn push_text(&mut self, s: &str, code: bool) {
@@ -542,6 +570,52 @@ fn trim(p: &mut EPara) {
         c.start = c.start.min(n);
         c.end = c.end.min(n);
     }
+}
+
+/// Inline formatting tags docex writes: `<u>`, `<sup>`, `<sub>`,
+/// `<mark data-color="green">`, `<span style="color:#C00000">`. False for
+/// any other tag.
+fn format_tag(t: &str, inl: &mut Inline) -> bool {
+    let attr = |name: &str| -> Option<String> {
+        let i = t.find(&format!("{name}="))? + name.len() + 1;
+        let v = t[i..].trim_start_matches(['"', '\'']);
+        Some(v.chars().take_while(|c| *c != '"' && *c != '\'' && *c != '>').collect())
+    };
+    match t {
+        "<u>" => inl.underline += 1,
+        "</u>" => inl.underline = inl.underline.saturating_sub(1),
+        "<sup>" => inl.sup += 1,
+        "</sup>" => inl.sup = inl.sup.saturating_sub(1),
+        "<sub>" => inl.sub += 1,
+        "</sub>" => inl.sub = inl.sub.saturating_sub(1),
+        "</mark>" => {
+            inl.marker.pop();
+        }
+        "</span>" => {
+            if let Some(SpanKind::Color) = inl.spans.pop() {
+                inl.color.pop();
+            }
+        }
+        _ if t.starts_with("<mark") => {
+            let i = attr("data-color").map(|c| crate::model::highlight_index(&c)).filter(|i| *i != 0).unwrap_or(1);
+            inl.marker.push(i);
+        }
+        _ if t.starts_with("<span") => {
+            let color = attr("style").and_then(|s| {
+                let hex = s.split("color:").nth(1)?.trim().trim_start_matches('#');
+                u32::from_str_radix(hex.get(..6)?, 16).ok()
+            });
+            match color {
+                Some(c) => {
+                    inl.color.push(c);
+                    inl.spans.push(SpanKind::Color);
+                }
+                None => inl.spans.push(SpanKind::Other),
+            }
+        }
+        _ => return false,
+    }
+    true
 }
 
 /// An HTML table (`<table>`, `<tr>`, `<td>`/`<th>` with colspan and rowspan).
@@ -884,6 +958,7 @@ pub fn parse_full(src: &str) -> Parsed {
                     }
                 } else if lower == "<br>" || lower == "<br/>" || lower == "<br />" {
                     p.push_obj("\n".into());
+                } else if format_tag(&lower, &mut p.inl) {
                 } else if t.starts_with("<!--docex:") {
                     p.push_obj(t.to_string());
                 } else {

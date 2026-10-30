@@ -39,6 +39,19 @@ pub struct Span {
     pub s: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub c: bool,
+    /// Underlined, superscript, subscript.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub u: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sup: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sub: bool,
+    /// Highlighter colour (Word's name: yellow, green, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hl: Option<String>,
+    /// Font colour, `#RRGGBB`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
     #[serde(default, skip_serializing_if = "is_plain")]
@@ -212,6 +225,11 @@ fn para_to_model(p: Option<&Para>, e: &EPara, known_comments: &HashSet<String>) 
             i: a.marks.italic,
             s: a.marks.strike,
             c: a.marks.code,
+            u: a.marks.underline,
+            sup: a.marks.sup,
+            sub: a.marks.sub,
+            hl: (a.marks.highlight != 0).then(|| crate::model::HIGHLIGHTS[a.marks.highlight as usize].to_string()),
+            color: a.marks.color.map(|c| format!("#{c:06X}")),
             link: a.link.clone(),
             st: a.st,
             author,
@@ -385,7 +403,17 @@ pub fn export(
 fn para_from_model(m: &MPara) -> EPara {
     let mut atoms = Vec::new();
     for s in &m.spans {
-        let marks = Marks { bold: s.b, italic: s.i, strike: s.s, code: s.c };
+        let marks = Marks {
+            bold: s.b,
+            italic: s.i,
+            strike: s.s,
+            code: s.c,
+            underline: s.u,
+            sup: s.sup,
+            sub: s.sub && !s.sup,
+            highlight: s.hl.as_deref().map(crate::model::highlight_index).unwrap_or(0),
+            color: s.color.as_deref().and_then(|c| u32::from_str_radix(c.trim_start_matches('#'), 16).ok()),
+        };
         let mk = |key: String| EAtom { key, marks, link: s.link.clone().filter(|l| !l.is_empty()), st: s.st };
         match &s.obj {
             Some(o) => atoms.push(mk(o.clone())),

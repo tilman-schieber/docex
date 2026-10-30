@@ -37,6 +37,7 @@ import {
   createElement,
   FilePlus,
   FolderOpen,
+  Highlighter,
   Image,
   Italic,
   Link,
@@ -53,6 +54,7 @@ import {
   TableCellsMerge,
   TableCellsSplit,
   Trash2,
+  Underline,
   Undo2,
 } from "lucide";
 import { initTheme } from "./theme";
@@ -295,6 +297,11 @@ function plugins() {
       "Mod-b": toggleMark(schema.marks.strong),
       "Mod-i": toggleMark(schema.marks.em),
       "Mod-`": toggleMark(schema.marks.code),
+      "Mod-u": toggleMark(schema.marks.underline),
+      // Word's keys for raised / lowered text.
+      "Shift-Mod-=": toggleMark(schema.marks.sup),
+      "Shift-Mod-+": toggleMark(schema.marks.sup),
+      "Mod-=": toggleMark(schema.marks.sub),
       "Mod-k": toggleLink,
       Enter: splitKeep,
       "Shift-Enter": (state, dispatch) => {
@@ -714,6 +721,8 @@ const markButtons: [HTMLButtonElement, MarkType][] = [
   [tb(Bold, "Bold  Ctrl+B", () => toggleMark(schema.marks.strong)(view.state, view.dispatch)), schema.marks.strong],
   [tb(Italic, "Italic  Ctrl+I", () => toggleMark(schema.marks.em)(view.state, view.dispatch)), schema.marks.em],
   [tb(Code, "Code  Ctrl+`", () => toggleMark(schema.marks.code)(view.state, view.dispatch)), schema.marks.code],
+  [tb(Underline, "Underline  Ctrl+U", () => toggleMark(schema.marks.underline)(view.state, view.dispatch)), schema.marks.underline],
+  [tb(Highlighter, "Highlight (yellow)  click again to remove", () => toggleMark(schema.marks.highlight, { color: "yellow" })(view.state, view.dispatch)), schema.marks.highlight],
   [tb(Link, "Link  Ctrl+K", () => toggleLink(view.state, view.dispatch)), schema.marks.link],
 ];
 
@@ -872,6 +881,31 @@ function openAIMenu() {
   openPalette(aiEntries(), "AI: rewrite, ask, summarize…  (rewrites become tracked changes)");
 }
 
+/** Character formatting for the palette: raised/lowered text, highlighter colours, font colours. */
+function formatEntries(): Entry[] {
+  const run = (cmd: Command) => () => {
+    cmd(view.state, view.dispatch);
+    view.focus();
+  };
+  const setMark = (type: MarkType, attrs: Record<string, string> | null): Command => (state, dispatch) => {
+    const { from, to, empty } = state.selection;
+    if (empty) return false;
+    let tr = state.tr.removeMark(from, to, type);
+    if (attrs) tr = tr.addMark(from, to, type.create(attrs));
+    dispatch?.(tr);
+    return true;
+  };
+  const { sup, sub, highlight, color } = schema.marks;
+  return [
+    { label: "Superscript", group: "Format", hint: "Ctrl+Shift+=", run: run(toggleMark(sup)) },
+    { label: "Subscript", group: "Format", hint: "Ctrl+=", run: run(toggleMark(sub)) },
+    ...["yellow", "green", "cyan", "magenta", "red", "blue"].map((c) => ({ label: `Highlight ${c}`, group: "Format", run: run(setMark(highlight, { color: c })) })),
+    { label: "Remove highlight", group: "Format", run: run(setMark(highlight, null)) },
+    ...([["red", "#C00000"], ["blue", "#0070C0"], ["green", "#00B050"], ["orange", "#ED7D31"]] as const).map(([n, c]) => ({ label: `Text colour ${n}`, group: "Format", run: run(setMark(color, { color: c })) })),
+    { label: "Remove text colour", group: "Format", run: run(setMark(color, null)) },
+  ];
+}
+
 function paletteEntries(): Entry[] {
   const idx = cockpit.index();
   const e: Entry[] = [
@@ -897,6 +931,7 @@ function paletteEntries(): Entry[] {
     { label: "Insert formula", group: "Insert", run: () => insertMath() },
     { label: "Comment on selection", group: "Insert", run: addComment },
     ...KINDS.map(([k, label]) => ({ label: `Style: ${label}`, group: "Format", run: () => { setKind(k)(view.state, view.dispatch); view.focus(); } })),
+    ...formatEntries(),
     ...aiEntries(),
   ];
   idx.sections.forEach((s, i) => {

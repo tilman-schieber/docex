@@ -523,6 +523,17 @@ main {
   font-variant-numeric: tabular-nums;
 }
 
+/* Character formatting from Word */
+.ProseMirror mark.marker {
+  background: color-mix(in srgb, var(--hl) 38%, transparent);
+  color: inherit;
+  border-radius: 2px;
+}
+
+.ProseMirror .fc {
+  color: color-mix(in srgb, var(--fc) 75%, var(--text));
+}
+
 /* Tracked changes and comments */
 .ProseMirror ins {
   color: var(--green);

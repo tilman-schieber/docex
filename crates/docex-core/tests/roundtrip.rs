@@ -33,6 +33,11 @@ fn docx_with(body: &str, numbering: Option<&str>, styles: &str) -> Docx {
     Docx::from_bytes(zout.finish().unwrap().into_inner()).unwrap()
 }
 
+/// Markdown without WORDY's red colour (for checks on the text).
+fn uncolored(md: &str) -> String {
+    md.replace(r#"<span style="color:#FF0000">"#, "").replace("</span>", "")
+}
+
 fn opts(tracked: bool) -> ApplyOpts {
     ApplyOpts { author: "Me".into(), date: "2026-10-29T00:00:00Z".into(), tracked, base_dir: None, keep_opaque: false }
 }
@@ -58,9 +63,9 @@ fn noop_is_byte_identical() {
 fn renders_others_changes() {
     let d = docx(WORDY);
     let md = d.render(View::Review);
-    assert!(md.contains("The tenant pays {--500--}{++600++} euros per month."), "{md}");
-    assert_eq!(d.render(View::Accepted).lines().nth(2), Some("The tenant pays 600 euros per month."));
-    assert_eq!(d.render(View::Original).lines().nth(2), Some("The tenant pays 500 euros per month."));
+    assert!(md.contains(r#"<span style="color:#FF0000">The tenant pays</span> {--500--}{++600++} euros per month."#), "{md}");
+    assert_eq!(uncolored(&d.render(View::Accepted)).lines().nth(2), Some("The tenant pays 600 euros per month."));
+    assert_eq!(uncolored(&d.render(View::Original)).lines().nth(2), Some("The tenant pays 500 euros per month."));
 }
 
 #[test]
@@ -87,7 +92,7 @@ fn tracked_edit_keeps_formatting_and_others_changes() {
     // Accepting everything yields the clean text.
     d2.resolve_changes(&[], None, true).unwrap();
     assert!(d2.changes().is_empty());
-    assert!(d2.render(View::Review).contains("The tenant always pays 600 euros per calendar month."));
+    assert!(uncolored(&d2.render(View::Review)).contains("The tenant always pays 600 euros per calendar month."));
 }
 
 #[test]
@@ -340,7 +345,7 @@ fn model_roundtrip_is_noop_and_edits_track() {
     assert!(md.contains("{--Second --}clause stays.{++ New.++}"), "{md}");
     // Accept Alice's insertion by its Word id.
     assert_eq!(d.resolve_wids(&["2".into()], true).unwrap(), 1);
-    assert!(d.render(View::Review).contains("pays {--500--}600 euros"));
+    assert!(uncolored(&d.render(View::Review)).contains("pays {--500--}600 euros"));
 }
 
 #[test]
@@ -420,7 +425,7 @@ fn review_ids_are_stable_and_resolve_together() {
     let (a, r) = d.resolve_ids(&[alice[0].id.clone()], &mine).unwrap();
     assert!(a >= 1 && r >= 1);
     assert!(d.changes().is_empty());
-    let md = d.render(View::Review);
+    let md = uncolored(&d.render(View::Review));
     assert!(md.contains("pays 600 euros") && md.contains("Second clause stays."), "{md}");
     // Unknown ids are refused before anything changes.
     assert!(d.resolve_ids(&["c999".into()], &[]).is_err());
@@ -806,4 +811,53 @@ fn editing_content_controls() {
     assert!(!d.apply(&out, &opts(true)).unwrap().changed());
     // Numbers and review sections see the paragraphs too.
     assert!(d.review().items.iter().any(|i| i.section.first().is_some_and(|s| s == "Annual Report")));
+}
+
+#[test]
+fn underline_highlight_color_and_raised_text() {
+    let run = |rpr: &str, t: &str| format!(r#"<w:r><w:rPr>{rpr}</w:rPr><w:t xml:space="preserve">{t}</w:t></w:r>"#);
+    let body = format!(
+        "<w:p>{}{}{}{}{}{}{}{}</w:p><w:p><w:r><w:t>Plain.</w:t></w:r></w:p>",
+        run(r#"<w:u w:val="single"/>"#, "Defined Term"),
+        run("", " means "),
+        run(r#"<w:highlight w:val="yellow"/>"#, "check this"),
+        run("", ", "),
+        run(r#"<w:color w:val="C00000"/>"#, "open point"),
+        run(r#"<w:color w:val="595959"/>"#, " grey is not a colour, 10"),
+        run(r#"<w:vertAlign w:val="superscript"/>"#, "6"),
+        run(r#"<w:highlight w:val="green"/><w:vertAlign w:val="subscript"/>"#, "2"),
+    );
+    let mut d = docx(&body);
+    let md = d.render(View::Review);
+    assert!(
+        md.contains(r#"<u>Defined Term</u> means <mark>check this</mark>, <span style="color:#C00000">open point</span> grey is not a colour, 10<sup>6</sup><sub><mark data-color="green">2</mark></sub>"#),
+        "{md}"
+    );
+    let before = d.dom.to_xml();
+    assert!(!d.apply(&md, &opts(true)).unwrap().changed());
+    assert!(!d.apply_model(&d.model(), &opts(true)).unwrap().changed());
+    assert_eq!(d.dom.to_xml(), before);
+    // Adding and removing formatting writes Word's properties.
+    let edited = md.replace("<u>Defined Term</u>", "Defined Term").replace("Plain.", "<u>Under</u>, <mark data-color=\"cyan\">cyan</mark>, H<sub>2</sub>O, <span style=\"color:#0070C0\">blue</span>.");
+    d.apply(&edited, &opts(false)).unwrap();
+    let mut d = reopen(&mut d);
+    let xml = d.dom.to_xml();
+    assert!(xml.contains(r#"<w:highlight w:val="cyan"/>"#) && xml.contains(r#"<w:vertAlign w:val="subscript"/>"#) && xml.contains(r#"<w:color w:val="0070C0"/>"#), "{xml}");
+    assert_eq!(xml.matches("<w:u ").count(), 1, "{xml}");
+    let out = d.render(View::Review);
+    assert!(out.contains(r#"<u>Under</u>, <mark data-color="cyan">cyan</mark>, H<sub>2</sub>O, <span style="color:#0070C0">blue</span>."#), "{out}");
+    assert!(!d.apply(&out, &opts(false)).unwrap().changed());
+}
+
+#[test]
+fn shading_and_raised_position_count_as_highlight_and_superscript() {
+    // As LibreOffice writes them.
+    let mut d = docx(r#"<w:p><w:r><w:t xml:space="preserve">20 m</w:t></w:r><w:r><w:rPr><w:position w:val="8"/><w:sz w:val="19"/></w:rPr><w:t>2</w:t></w:r><w:r><w:t xml:space="preserve">, </w:t></w:r><w:r><w:rPr><w:shd w:fill="FFFF00" w:val="clear"/></w:rPr><w:t>check</w:t></w:r></w:p>"#);
+    let md = d.render(View::Review);
+    assert!(md.contains("20 m<sup>2</sup>, <mark>check</mark>"), "{md}");
+    assert!(!d.apply(&md, &opts(true)).unwrap().changed());
+    // Removing them removes the shading and the raised position.
+    d.apply(&md.replace("<sup>2</sup>", "2").replace("<mark>check</mark>", "check"), &opts(false)).unwrap();
+    let xml = reopen(&mut d).dom.to_xml();
+    assert!(!xml.contains("w:position") && !xml.contains("w:shd"), "{xml}");
 }

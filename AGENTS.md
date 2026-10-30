@@ -34,6 +34,7 @@ Rules:
 - **Existing `{++…++}` / `{--…--}` belong to other people.** Leave them in place. Accept or reject them with `resolve`; don't delete them by hand.
 - **To suggest an edit explicitly**, write `{~~old~>new~~}`, `{++added++}` or `{--removed--}`. These are always tracked.
 - **Structure:** `#` makes a heading, `- ` a bullet, `1. ` a numbered item, `> ` a quote, `: ` a caption.
+- **Underline, highlight, colour, raised text:** `<u>`, `<mark>` (`data-color="green"` for other highlighter colours), `<span style="color:#C00000">`, `<sup>`, `<sub>`. Keep them as rendered; add or remove them like `**bold**`.
 - **Formulas:** `$…$` inline, `$$…$$` on its own line. They become Word equations.
 - **Footnotes:** edit the `[^n]: text` definitions at the end. To add one, put `[^new]` in the text and `[^new]: text` at the end.
 - **Tables:** edit cells in place; add or remove rows and columns. Pipe tables: inside a cell, write `|` as `\|`. Tables with merged cells are HTML (`<table>`, one `<td>` per line, `colspan`/`rowspan`); a cell covered by a `rowspan` from above is not listed in its row. Cell text is docex Markdown, `<br>` separates paragraphs. To merge, widen one cell's span and remove the cells it now covers. Keep the table free of blank lines. Blocks marked `docex-table` are read-only.
