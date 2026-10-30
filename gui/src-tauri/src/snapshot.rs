@@ -15,11 +15,14 @@ pub struct Snapshot {
     pub paras: Vec<String>,
 }
 
-/// docex's data directory (`$XDG_DATA_HOME/docex`, else `~/.local/share/docex`).
+/// docex's data directory (`$XDG_DATA_HOME/docex`, else `~/.local/share/docex`;
+/// on Windows `%LOCALAPPDATA%\docex`).
 pub fn data_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        // Windows has no HOME.
+        .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))?;
     Some(base.join("docex"))
 }
 

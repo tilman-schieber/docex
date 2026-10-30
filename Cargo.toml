@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/docex-core", "crates/docex-cli", "gui/src-tauri"]
+# `cargo build` builds the CLI. The desktop app needs its web front end
+# built too: ./install.sh, or `npx tauri build` in gui/.
+default-members = ["crates/docex-core", "crates/docex-cli"]
 
 [workspace.package]
 edition = "2021"

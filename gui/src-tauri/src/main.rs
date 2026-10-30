@@ -206,7 +206,31 @@ async fn ai_complete(app: tauri::AppHandle, req: ai::Request) -> Result<String, 
     ai::complete(app, req).await
 }
 
+/// A development build loads its page from the Vite dev server (`npx tauri
+/// dev` starts it). Run on its own, it would show "could not connect to
+/// localhost": say what to do instead.
+fn check_dev_build(cx: &tauri::Context) {
+    if !tauri::is_dev() {
+        return;
+    }
+    let Some(url) = cx.config().build.dev_url.as_ref() else { return };
+    let addr = (url.host_str().unwrap_or("localhost"), url.port_or_known_default().unwrap_or(80));
+    let up = std::net::ToSocketAddrs::to_socket_addrs(&addr)
+        .map(|mut a| a.any(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_millis(500)).is_ok()))
+        .unwrap_or(false);
+    if !up {
+        eprintln!(
+            "docex-gui: this is a development build; it shows the editor from the dev server at {url}, which isn't running.\n\
+             Install the app with ./install.sh (or build it with `npx tauri build --no-bundle` in gui/),\n\
+             or run it from source with `npx tauri dev` in gui/."
+        );
+        std::process::exit(1);
+    }
+}
+
 fn main() {
+    let cx = tauri::generate_context!();
+    check_dev_build(&cx);
     // WebKitGTK's DMA-BUF renderer crashes on several Wayland compositors
     // (e.g. Hyprland: "Error 71 (Protocol error)").
     #[cfg(target_os = "linux")]
@@ -266,6 +290,6 @@ fn main() {
             get_author,
             set_author
         ])
-        .run(tauri::generate_context!())
+        .run(cx)
         .expect("error while running docex");
 }

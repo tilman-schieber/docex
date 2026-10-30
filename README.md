@@ -8,12 +8,27 @@ There are three ways in: the `docex` command line, a [desktop app](#desktop-app)
 
 ![The docex desktop app reviewing a report with tracked changes from three people: outline with per-section counts on the left, the formatted document in the middle, the review feed with people, filters and repeated edits on the right](docs/screenshots/main.png)
 
-## Quick start
+## Install
+
+**Ready-made:** the [releases page](https://github.com/tilman-schieber/docex/releases) has the desktop app for Linux (.deb, .rpm, AppImage), macOS (.dmg) and Windows (installer), and the `docex` command line for each. The macOS app isn't signed: the first time, right-click it and choose Open.
+
+**From source** (Linux, macOS):
 
 ```sh
-cargo build --release                 # target/release/docex
-target/release/docex cat report.docx  # read it as Markdown
-target/release/docex edit report.docx # change it in $EDITOR; edits land in the .docx
+git clone https://github.com/tilman-schieber/docex && cd docex
+./install.sh            # the command line and the app, into ~/.local/bin, with a menu entry
+./install.sh --cli      # only the command line (needs just Rust)
+./install.sh --uninstall
+```
+
+It needs [Rust](https://rustup.rs) and, for the app, Node.js 20+ and on Linux WebKitGTK 4.1; it tells you what's missing and how to get it. The command line alone also installs with `cargo install --git https://github.com/tilman-schieber/docex docex`.
+
+Then:
+
+```sh
+docex cat report.docx     # read it as Markdown
+docex edit report.docx    # change it in $EDITOR; edits land in the .docx
+docex-gui report.docx     # the desktop app
 ```
 
 ## Command line
@@ -65,12 +80,7 @@ Its focus is the part of working with Word documents that takes the most time: *
 </tr>
 </table>
 
-```sh
-cd gui
-npm install
-npx tauri dev -- -- path/to/file.docx   # run from source
-npx tauri build --no-bundle             # binary: target/release/docex-gui
-```
+To work on it, run it from source with `npx tauri dev -- -- path/to/file.docx` in `gui/` (after `npm install`).
 
 ## AI agents
 
@@ -79,8 +89,12 @@ docex gives an agent the same access a person has: it reads the document as text
 ## Building and testing
 
 ```sh
-cargo build --release
+cargo build --release                   # the command line: target/release/docex
 cargo test
-cd gui && npm test && npm run e2e       # GUI unit tests; clicks and keys in headless Chromium
+cd gui && npm install
+npx tauri build --no-bundle             # the app: target/release/docex-gui
+npm test && npm run e2e                 # GUI unit tests; clicks and keys in headless Chromium
 npm run screenshots                     # regenerate docs/screenshots/
 ```
+
+A plain `cargo build` doesn't build the app: Tauri has to bundle the web front end into it (`npx tauri build`). A development build of the app (`cargo build -p docex-gui`) only works under `npx tauri dev`, and says so. Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed.
