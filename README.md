@@ -108,6 +108,13 @@ Things deliberately left out: spacing, fonts, font sizes, page layout. New text 
 - tables, including merged cells: add and remove rows and columns, merge cells (drag across them) and split them
 - images, footnotes, text boxes and captions
 
+<table>
+<tr>
+<td><img src="docs/screenshots/tables.png" alt="A budget table with merged cells: work package names spanning two rows, years spanning two columns; with the cursor in the table the toolbar offers insert row and column, merge, split and delete"></td>
+<td><img src="docs/screenshots/charts.png" alt="A column chart of revenue by quarter for 2025 and 2026, drawn from the document's chart data, and a SmartArt process Plan → Build → Ship"></td>
+</tr>
+</table>
+
 It's built for reviewing, not just editing:
 - **Word's numbering:** numbered headings and lists show Word's own numbers ("3.2 Liability", "(b)", "Article IV"), worked out from the document's numbering definitions, so "see clause 4.2(b)" can be followed. Display only: Word keeps computing them.
 - **Outline:** the heading tree with per-section counts of changes and comments, plus an activity bar colored by author. It follows where you are and collapses; click to jump.
@@ -142,6 +149,8 @@ npm install
 npx tauri dev -- -- path/to/file.docx   # run from source
 npx tauri build --no-bundle             # binary: target/release/docex-gui
 npm test                                # GUI conversion + live tracking against the core
+npm run e2e                             # clicks and keys in headless Chromium on the real backend
+npm run screenshots                     # regenerate docs/screenshots/
 ```
 
 ## Building
