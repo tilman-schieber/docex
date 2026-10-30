@@ -45,6 +45,13 @@ export type MBlock =
   | { type: "control"; id: number; label: string; paras: MPara[]; locked?: boolean }
   | { type: "opaque"; id: number; label: string; preview: string };
 
+/** A header or footer, as text (shown, not edited). */
+export interface HeaderFooter {
+  footer: boolean;
+  which: "default" | "first" | "even";
+  lines: string[];
+}
+
 export interface MBox {
   id: string;
   after: number | null;
@@ -60,6 +67,7 @@ export interface DocModel {
   blocks: MBlock[];
   boxes: MBox[];
   notes: MNote[];
+  furniture?: HeaderFooter[];
 }
 
 export interface Change {

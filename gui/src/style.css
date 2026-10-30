@@ -523,6 +523,41 @@ main {
   font-variant-numeric: tabular-nums;
 }
 
+/* Headers and footers (read-only) */
+.furniture {
+  font-size: 0.8em;
+  color: var(--faint);
+  user-select: text;
+}
+
+.furniture.top:not(:empty) {
+  border-bottom: 1px dashed var(--hair);
+  padding-bottom: 6px;
+  margin-bottom: 1.4em;
+}
+
+.furniture.bottom:not(:empty) {
+  border-top: 1px dashed var(--hair);
+  padding-top: 6px;
+  margin-top: 2em;
+}
+
+.furniture .furn + .furn {
+  margin-top: 4px;
+}
+
+.furniture .furn[data-which]::before {
+  content: attr(data-which);
+  font-family: var(--mono);
+  font-size: 0.85em;
+  margin-right: 0.6em;
+  opacity: 0.8;
+}
+
+.furniture .furn[data-which] > div {
+  display: inline;
+}
+
 /* Character formatting from Word */
 .ProseMirror mark.marker {
   background: color-mix(in srgb, var(--hl) 38%, transparent);

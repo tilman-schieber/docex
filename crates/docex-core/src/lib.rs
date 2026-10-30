@@ -7,6 +7,15 @@ pub mod math;
 pub mod mdparse;
 pub mod model;
 pub mod numbering;
+
+/// A header or footer, as text (headers and footers are shown, not edited).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct HeaderFooter {
+    pub footer: bool,
+    /// default, first (first page) or even (even pages).
+    pub which: String,
+    pub lines: Vec<String>,
+}
 pub mod package;
 pub mod patch;
 pub mod render;
@@ -213,6 +222,64 @@ impl Docx {
         out
     }
 
+    /// The text of the headers and footers of all sections (read-only),
+    /// each part once, in order.
+    pub fn headers_footers(&self) -> Vec<HeaderFooter> {
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        let mut refs = Vec::new();
+        self.body().visit(&mut |e| {
+            if e.is("w:headerReference") || e.is("w:footerReference") {
+                refs.push((e.is("w:footerReference"), e.attr("w:type").unwrap_or("default").to_string(), e.attr("r:id").unwrap_or("").to_string()));
+            }
+        });
+        // Headers first, then footers; default before first page and even pages.
+        refs.sort_by_key(|(footer, which, _)| (*footer, which != "default"));
+        for (footer, which, id) in refs {
+            let Some(rel) = self.rels.get(&id) else { continue };
+            let part = self.rels.resolve(rel.target);
+            if !seen.insert(part.clone()) {
+                continue;
+            }
+            let Ok(doc) = self.pkg.read_xml(&part) else { continue };
+            let Ok(rels) = package::Rels::load(&self.pkg, &part) else { continue };
+            let cx = Ctx { styles: &self.styles, rels: &rels };
+            let text = |p: &Element| render::view_text(&model::para(p, Vec::new(), &cx), View::Accepted);
+            let mut lines = Vec::new();
+            let walk = |e: &Element, lines: &mut Vec<String>| {
+                for c in e.elements() {
+                    match c.name.as_str() {
+                        "w:p" => lines.push(text(c)),
+                        // A header table ("logo | title | document no.") reads as one line per row.
+                        "w:tbl" => {
+                            for tr in c.elements().filter(|x| x.is("w:tr")) {
+                                let cells: Vec<String> = tr
+                                    .elements()
+                                    .filter(|x| x.is("w:tc"))
+                                    .map(|tc| tc.elements().filter(|x| x.is("w:p")).map(text).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" "))
+                                    .filter(|t| !t.is_empty())
+                                    .collect();
+                                lines.push(cells.join(" | "));
+                            }
+                        }
+                        "w:sdt" => {
+                            if let Some(sc) = c.child("w:sdtContent") {
+                                lines.extend(sc.elements().filter(|x| x.is("w:p")).map(text));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            };
+            walk(&doc.root, &mut lines);
+            lines.retain(|l| !l.trim().is_empty());
+            if !lines.is_empty() {
+                out.push(HeaderFooter { footer, which, lines });
+            }
+        }
+        out
+    }
+
     pub fn text_boxes(&self) -> Vec<TextBox> {
         model::text_boxes(self.body(), &Ctx { styles: &self.styles, rels: &self.rels })
     }
@@ -237,7 +304,17 @@ impl Docx {
                 });
             }
         }
-        RenderCtx { view, comments: &self.comments, ranged, notes, boxes, ids: false, id_prefix: std::cell::Cell::new("c"), labels: None }
+        RenderCtx {
+            view,
+            comments: &self.comments,
+            ranged,
+            notes,
+            boxes,
+            ids: false,
+            id_prefix: std::cell::Cell::new("c"),
+            labels: None,
+            furniture: self.headers_footers(),
+        }
     }
 
     fn render_full(&self, view: View) -> render::Rendered {
@@ -323,7 +400,14 @@ impl Docx {
 
     /// Apply an edited Markdown version of this document.
     pub fn apply(&mut self, edited: &str, opts: &Opts) -> Result<Report> {
-        self.apply_parsed(mdparse::parse_full(edited), opts)
+        // Headers and footers are shown, not edited: say so if they were changed.
+        let furniture = |md: &str| md.lines().filter(|l| l.starts_with(render::HEADER_LINE) || l.starts_with(render::FOOTER_LINE)).map(String::from).collect::<Vec<_>>();
+        let touched = furniture(edited) != furniture(&self.render(View::Review));
+        let mut r = self.apply_parsed(mdparse::parse_full(edited), opts)?;
+        if touched {
+            r.warnings.push("headers and footers are read-only in docex; edit them in Word".into());
+        }
+        Ok(r)
     }
 
     /// The document as a JSON-able model for graphical editors.
@@ -332,7 +416,9 @@ impl Docx {
         let r = render::render(&blocks, &self.render_ctx(View::Review, &notes, &boxes));
         let parsed = mdparse::parse_full(&r.md);
         let known: HashSet<String> = self.comments.list.iter().map(|c| c.id.clone()).collect();
-        docmodel::export(&blocks, &r, &parsed, &notes, &boxes, &known, &self.labels(&blocks))
+        let mut m = docmodel::export(&blocks, &r, &parsed, &notes, &boxes, &known, &self.labels(&blocks));
+        m.furniture = self.headers_footers();
+        m
     }
 
     /// Apply an edited model (see [`Docx::model`]).

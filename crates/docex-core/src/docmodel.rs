@@ -143,6 +143,9 @@ pub struct DocModel {
     pub boxes: Vec<MBox>,
     #[serde(default)]
     pub notes: Vec<MNote>,
+    /// Headers and footers, for display (ignored on import).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub furniture: Vec<crate::HeaderFooter>,
 }
 
 pub fn kind_name(k: Kind) -> (String, u8) {

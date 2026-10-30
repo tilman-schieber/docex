@@ -29,6 +29,22 @@ pub struct RenderCtx<'a> {
     /// Automatic numbers to show in front of paragraphs, by paragraph path
     /// (a reading view: they don't parse back as part of the text).
     pub labels: Option<&'a std::collections::HashMap<Vec<usize>, String>>,
+    /// Headers and footers, shown as comments at the top and bottom.
+    pub furniture: Vec<crate::HeaderFooter>,
+}
+
+pub const HEADER_LINE: &str = "<!-- docex:header";
+pub const FOOTER_LINE: &str = "<!-- docex:footer";
+
+/// A header or footer as one comment line: `<!-- docex:header (first page) A · B -->`.
+fn furniture_line(h: &crate::HeaderFooter) -> String {
+    let which = match h.which.as_str() {
+        "first" => " (first page)",
+        "even" => " (even pages)",
+        _ => "",
+    };
+    let text = h.lines.join(" · ").replace("--", "–");
+    format!("{}{which} {text} -->", if h.footer { FOOTER_LINE } else { HEADER_LINE })
 }
 
 /// A paragraph's text with its automatic number in front, if shown.
@@ -88,6 +104,10 @@ pub fn render(blocks: &[Block], cx: &RenderCtx) -> Rendered {
     let mut control_map = Vec::new();
     if cx.view == View::Review {
         out.push_str(HEADER);
+    }
+    for h in cx.furniture.iter().filter(|h| !h.footer) {
+        sep(&mut out, false);
+        out.push_str(&furniture_line(h));
     }
     let mut prev_list = false;
     let mut prev_top: Option<bool> = None;
@@ -230,6 +250,10 @@ pub fn render(blocks: &[Block], cx: &RenderCtx) -> Rendered {
         text_boxes_after(a, cx, &mut out, &mut box_map, &mut in_code);
     }
     close_code(&mut out, &mut in_code);
+    for h in cx.furniture.iter().filter(|h| h.footer) {
+        sep(&mut out, false);
+        out.push_str(&furniture_line(h));
+    }
     let mut note_map = Vec::new();
     let referenced: Vec<&Note> = cx.notes.iter().filter(|n| out.contains(&format!("[^{}]", n.label))).collect();
     for n in referenced {

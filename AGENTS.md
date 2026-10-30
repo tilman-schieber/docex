@@ -30,6 +30,7 @@ docex lets you read, review and edit a .docx through the command line. The .docx
 
 Rules:
 - **Don't reformat.** Re-wrapping lines, changing list markers or "tidying" escapes all count as no-ops, but changing words creates word-level changes. Keep `\*`, `\_`, `\$` and similar escapes as they are.
+- **Headers and footers** show as `<!-- docex:header … -->` / `<!-- docex:footer … -->` lines; they are read-only (edits there are ignored with a warning).
 - **Leave `<!-- docex:… -->` placeholders alone.** They stand for content docex doesn't edit (TOC, shapes, page breaks, equations it can't convert). Deleting one deletes that content.
 - **Existing `{++…++}` / `{--…--}` belong to other people.** Leave them in place. Accept or reject them with `resolve`; don't delete them by hand.
 - **To suggest an edit explicitly**, write `{~~old~>new~~}`, `{++added++}` or `{--removed--}`. These are always tracked.

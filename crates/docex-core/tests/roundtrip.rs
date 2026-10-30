@@ -861,3 +861,19 @@ fn shading_and_raised_position_count_as_highlight_and_superscript() {
     let xml = reopen(&mut d).dom.to_xml();
     assert!(!xml.contains("w:position") && !xml.contains("w:shd"), "{xml}");
 }
+
+#[test]
+fn headers_and_footers_are_shown_read_only() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/header-footer.docx");
+    let mut d = Docx::open(&path).unwrap();
+    let md = d.render(View::Review);
+    assert!(md.contains("<!-- docex:header ACME Corp · Confidential -->"), "{md}");
+    assert!(md.contains("<!-- docex:footer Contract 2026-117 · Page 1 -->"), "{md}");
+    assert!(!d.apply(&md, &opts(true)).unwrap().changed());
+    // Editing them changes nothing, with a warning; the body edit still goes through.
+    let r = d.apply(&md.replace("Confidential", "Public").replace("Body text", "The body text"), &opts(true)).unwrap();
+    assert!(r.warnings.iter().any(|w| w.contains("read-only")), "{:?}", r.warnings);
+    assert!(r.changed());
+    assert!(d.render(View::Review).contains("ACME Corp · Confidential"));
+    assert_eq!(d.model().furniture.len(), 2);
+}

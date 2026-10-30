@@ -69,7 +69,7 @@ import { createCockpit } from "./cockpit";
 import { atomIndex, docToModel, modelToDoc, type PendingComment } from "./convert";
 import { imageUrls, KINDS, renderMath, schema } from "./schema";
 import { trackTransaction } from "./track";
-import type { Change, Comment, View } from "./types";
+import type { Change, Comment, HeaderFooter, View } from "./types";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 const h = <K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> & { class?: string } = {}, ...kids: (Node | string)[]) => {
@@ -445,6 +445,30 @@ cockpit.onSectionChange((t) => {
   renderStatus();
 });
 
+// Headers and footers: faint, read-only strips above and below the text.
+const pageHeader = h("div", { class: "furniture top" });
+const pageFooter = h("div", { class: "furniture bottom" });
+view.dom.before(pageHeader);
+view.dom.after(pageFooter);
+
+function renderFurniture(list: HeaderFooter[]) {
+  const fill = (el: HTMLElement, footer: boolean) => {
+    el.replaceChildren(
+      ...list
+        .filter((f) => f.footer === footer)
+        .map((f) => {
+          const tag = f.which === "first" ? "first page" : f.which === "even" ? "even pages" : "";
+          const row = h("div", { class: "furn" }, ...f.lines.map((l) => h("div", {}, l)));
+          if (tag) row.dataset.which = tag;
+          return row;
+        }),
+    );
+    el.title = footer ? "Footer (edit in Word)" : "Header (edit in Word)";
+  };
+  fill(pageHeader, false);
+  fill(pageFooter, true);
+}
+
 function load(v: View, keepSelection = true) {
   current = v;
   tracking = v.track;
@@ -461,6 +485,7 @@ function load(v: View, keepSelection = true) {
     }
   }
   view.updateState(state);
+  renderFurniture(v.model.furniture ?? []);
   localDirty = false;
   if (!v.can_undo) dropActionToasts();
   for (const w of v.warnings) toast(w);
