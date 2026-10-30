@@ -21,7 +21,7 @@ import { analyze, inSubtree, type Index, type Item, type Person } from "./analyz
 import { schema } from "./schema";
 import { setHighlight } from "./highlight";
 import * as log from "./review-log";
-import { authorColor, initials } from "./theme";
+import { assignAuthors, authorColor, initials } from "./theme";
 import type { View } from "./types";
 
 export interface App {
@@ -96,7 +96,13 @@ function avatar(name: string, small = false) {
 export function createCockpit(app: App) {
   const view = app.view;
   const wrap = $("#page-wrap");
-  let index: Index = analyze(view.state.doc, null, app.me());
+  let index: Index = indexDoc(null);
+  /** Analyze the document and give its people their colours, in order of appearance. */
+  function indexDoc(v: ReturnType<App["current"]>): Index {
+    const idx = analyze(view.state.doc, v, app.me());
+    assignAuthors([app.me(), ...idx.items.flatMap((i) => [i.author, ...(i.replies ?? []).map((r) => r.author)])]);
+    return idx;
+  }
   const filter = {
     people: new Set<string>(),
     show: "all" as "all" | "changes" | "comments" | "open" | "mine",
@@ -855,7 +861,7 @@ export function createCockpit(app: App) {
   }
 
   function refreshNow() {
-    index = analyze(view.state.doc, app.current(), app.me());
+    index = indexDoc(app.current());
     if (filter.section !== null && filter.section >= index.sections.length) filter.section = null;
     measure();
     renderAll();

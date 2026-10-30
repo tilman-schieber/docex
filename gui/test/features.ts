@@ -5,6 +5,7 @@ import { analyze } from "../src/analyze";
 import { modelToDoc } from "../src/convert";
 import { diffWords } from "../src/diff";
 import { computeSince } from "../src/since";
+import { assignAuthors, authorColor, authorPalette } from "../src/theme";
 import type { DocModel, View } from "../src/types";
 
 let failed = 0;
@@ -71,4 +72,15 @@ let st = EditorState.create({ doc: modelToDoc({ blocks: [para([{ t: "One." }]), 
 st = st.apply(st.tr.setSelection(TextSelection.create(st.doc, 7, 10)));
 const marked = JSON.stringify(markedModel(st).blocks.map((b) => (b as { spans: { t?: string }[] }).spans.map((x) => x.t).join("")));
 check("selection marked", marked === JSON.stringify(["One.", "\uE000Two\uE001 words."]), marked);
+
+// Author colours: distinct, and handed out in order of appearance
+const tokyo = { accent: "#7aa2f7", background: "#1a1b26", red: "#f7768e", yellow: "#e0af68", orange: "#ff9e64", green: "#9ece6a", cyan: "#7dcfff", blue: "#7aa2f7", magenta: "#bb9af7" };
+const pal = authorPalette(tokyo);
+check("palette: theme hues first, accent = blue once", JSON.stringify(pal.slice(0, 5)) === JSON.stringify(["#7aa2f7", "#bb9af7", "#ff9e64", "#7dcfff", "#e0af68"]), JSON.stringify(pal));
+check("palette: a dozen or more colours", pal.length >= 12 && new Set(pal).size === pal.length, String(pal.length));
+const slot = (n: string) => authorColor(n).match(/--au(\d+)/)![1];
+assignAuthors(["Me", "Anna", "Bob", "Anna", "Cleo"]);
+check("first people get different colours", [slot("Me"), slot("Anna"), slot("Bob"), slot("Cleo")].join() === "0,1,2,3");
+assignAuthors(["Me", "Dora", "Cleo"]);
+check("colours stay; newcomers take a free one", slot("Cleo") === "3" && slot("Dora") === "1", `${slot("Cleo")} ${slot("Dora")}`);
 process.exit(failed ? 1 : 0);
