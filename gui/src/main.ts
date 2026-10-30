@@ -367,7 +367,7 @@ const view = new EditorView($("#editor"), {
   },
   handleDOMEvents: {
     click(_v, e) {
-      const el = (e.target as HTMLElement).closest("ins.chg, del.chg") as HTMLElement | null;
+      const el = (e.target as HTMLElement).closest("ins.chg, del.chg, .fmtchg") as HTMLElement | null;
       if (el && el.dataset.wid) {
         showChangePopover(el);
         cockpit.focusWid(el.dataset.wid);
@@ -1188,7 +1188,7 @@ document.addEventListener("keydown", (e) => {
   }
 });
 document.addEventListener("mousedown", (e) => {
-  if (!(e.target as HTMLElement).closest("#popover, ins.chg, del.chg")) hidePopover();
+  if (!(e.target as HTMLElement).closest("#popover, ins.chg, del.chg, .fmtchg")) hidePopover();
 });
 
 void getCurrentWindow().onCloseRequested(async (e) => {

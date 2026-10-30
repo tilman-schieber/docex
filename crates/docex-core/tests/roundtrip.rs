@@ -925,3 +925,24 @@ fn charts_and_smartart_show_their_data() {
     assert!(r.warnings.iter().any(|w| w.contains("chart data")), "{:?}", r.warnings);
     assert!(d.render(View::Review).contains("| 2025 | 10 |"));
 }
+
+#[test]
+fn format_changes_are_placed_in_the_text() {
+    let mut d = fixture("rich.docx");
+    let md = d.render(View::Review).replace("> A quoted paragraph.", "### A quoted paragraph.").replace("| Bob |", "| **Bob** |");
+    let opts = ApplyOpts { author: "Ed".into(), date: "2026-10-30T00:00:00Z".into(), tracked: true, base_dir: None, keep_opaque: false };
+    d.apply(&md, &opts).unwrap();
+    let rv = d.review();
+    let fmt: Vec<_> = rv.items.iter().filter(|i| i.author == "Ed").collect();
+    assert_eq!(fmt.len(), 2, "{fmt:?}");
+    for it in &fmt {
+        assert_eq!(it.kind, "format");
+        assert!(it.section.starts_with(&["Project Proposal".to_string(), "Goals".to_string()]), "{it:?}");
+    }
+    let texts: Vec<_> = fmt.iter().map(|i| i.text.clone().unwrap_or_default()).collect();
+    assert!(texts.contains(&"Bob".to_string()) && texts.contains(&"A quoted paragraph.".to_string()), "{texts:?}");
+    // The model carries the ids for editors.
+    let m = d.model();
+    let json = serde_json::to_string(&m).unwrap();
+    assert!(json.contains("\"fmt\":") && json.contains("\"pfmt\":"), "model lacks format change ids");
+}

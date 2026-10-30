@@ -40,7 +40,7 @@ export interface Item {
   /** Your own edits not yet sent to the core. */
   pending?: boolean;
   /** The marked ranges making up the item. */
-  parts: { from: number; to: number; type: "ins" | "del" }[];
+  parts: { from: number; to: number; type: "ins" | "del" | "fmt" }[];
   label?: string;
   comment?: Comment;
   replies?: Comment[];
@@ -92,7 +92,8 @@ function classify(it: Item): Item["noise"] {
 }
 
 interface Range {
-  type: "ins" | "del";
+  /** Inserted, deleted, or formatting changed. */
+  type: "ins" | "del" | "fmt";
   wid: string;
   author: string;
   date: string;
@@ -206,20 +207,35 @@ export function analyze(doc: PMNode, v: View | null, me: string): Index {
 
   // Tracked-change ranges and comment anchors in the text.
   const ranges: Range[] = [];
+  // The latest range of each type: a run continues it when adjacent.
+  const lastOf: Partial<Record<Range["type"], Range>> = {};
+  const add = (r: Range) => {
+    ranges.push(r);
+    lastOf[r.type] = r;
+  };
   const commentPos = new Map<string, { from: number; to: number; text: string }>();
   doc.descendants((n, pos) => {
+    if (n.type === schema.nodes.para && n.attrs.pfmt) {
+      ranges.push({ type: "fmt", wid: n.attrs.pfmt, author: me, date: "", from: pos + 1, to: pos + n.nodeSize - 1, text: n.textContent });
+    }
     if (!n.isInline) return true;
     const text = n.isText ? n.text! : leafText(n);
     for (const m of n.marks) {
-      if (m.type === schema.marks.ins || m.type === schema.marks.del) {
+      if (m.type === schema.marks.fmtchg) {
+        const last = lastOf.fmt;
+        if (last && last.wid === m.attrs.wid && last.to === pos) {
+          last.to = pos + n.nodeSize;
+          last.text += text;
+        } else add({ type: "fmt", wid: m.attrs.wid, author: me, date: "", from: pos, to: pos + n.nodeSize, text });
+      } else if (m.type === schema.marks.ins || m.type === schema.marks.del) {
         const type = m.type === schema.marks.ins ? "ins" : "del";
         const wid: string = m.attrs.wid || "";
-        const last = ranges[ranges.length - 1];
-        if (last && last.type === type && last.wid === wid && last.author === m.attrs.author && last.to === pos) {
+        const last = lastOf[type];
+        if (last && last.wid === wid && last.author === m.attrs.author && last.to === pos) {
           last.to = pos + n.nodeSize;
           last.text += text;
         } else {
-          ranges.push({ type, wid, author: m.attrs.author || me, date: m.attrs.date || "", from: pos, to: pos + n.nodeSize, text });
+          add({ type, wid, author: m.attrs.author || me, date: m.attrs.date || "", from: pos, to: pos + n.nodeSize, text });
         }
       } else if (m.type === schema.marks.comment) {
         for (const id of String(m.attrs.ids).split(" ").filter(Boolean)) {
@@ -264,13 +280,14 @@ export function analyze(doc: PMNode, v: View | null, me: string): Index {
     const del = rs.filter((r) => r.type === "del").map((r) => r.text).join("");
     if (ins) it.new = ins;
     if (del) it.old = del;
-    if (!ins && !del) it.text = c.text && c.text !== "¶" ? c.text : "";
+    const fmt = rs.filter((r) => r.type === "fmt").map((r) => r.text).join(" ").trim();
+    if (!ins && !del) it.text = fmt || (c.text && c.text !== "¶" ? c.text : "");
     items.push(it);
   }
   // Pending edits (no Word id yet): contiguous ranges.
   let pend = 0;
   for (const r of ranges) {
-    if (r.wid) continue;
+    if (r.wid || r.type === "fmt") continue;
     items.push({
       key: `p${pend++}`,
       kind: r.type === "ins" ? "insert" : "delete",

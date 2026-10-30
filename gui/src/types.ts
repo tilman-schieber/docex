@@ -21,6 +21,8 @@ export interface Span {
   date?: string;
   wid?: string;
   comments?: string[];
+  /** Word id of a tracked formatting change on this text. */
+  fmt?: string;
 }
 
 export interface NewComment {
@@ -36,6 +38,8 @@ export interface MPara {
   new_comments?: NewComment[];
   /** Word's automatic number, for display (not sent back). */
   label?: string;
+  /** Word id of a tracked paragraph-style change (display only). */
+  pfmt?: string;
 }
 
 export type MBlock =

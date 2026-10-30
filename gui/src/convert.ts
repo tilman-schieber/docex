@@ -22,6 +22,7 @@ function spanMarks(s: Span): Mark[] {
     out.push(marks[s.st].create({ author: s.author || "", date: s.date || "", wid: s.wid || "" }));
   }
   if (s.comments && s.comments.length) out.push(marks.comment.create({ ids: s.comments.join(" ") }));
+  if (s.fmt) out.push(marks.fmtchg.create({ wid: s.fmt }));
   return out;
 }
 
@@ -46,7 +47,7 @@ function inlineNodes(spans: Span[]): PMNode[] {
 }
 
 function para(p: MPara): PMNode {
-  return nodes.para.create({ kind: p.kind || "normal", level: p.level || 0, label: p.label ?? "" }, inlineNodes(p.spans));
+  return nodes.para.create({ kind: p.kind || "normal", level: p.level || 0, label: p.label ?? "", pfmt: p.pfmt ?? "" }, inlineNodes(p.spans));
 }
 
 function paras(ps: MPara[]): PMNode[] {

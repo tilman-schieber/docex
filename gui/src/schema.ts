@@ -57,8 +57,9 @@ export const schema = new Schema({
   nodes: {
     doc: { content: "block+" },
     para: {
-      // `label`: Word's automatic number ("3.2", "(b)"), shown but never saved.
-      attrs: { kind: { default: "normal" }, level: { default: 0 }, label: { default: "" } },
+      // `label`: Word's automatic number ("3.2", "(b)"), shown but never saved;
+      // `pfmt`: Word id of a tracked style change (display only).
+      attrs: { kind: { default: "normal" }, level: { default: 0 }, label: { default: "" }, pfmt: { default: "" } },
       content: "inline*",
       group: "block",
       parseDOM: [
@@ -69,9 +70,10 @@ export const schema = new Schema({
         { tag: "pre", preserveWhitespace: "full" as const, attrs: { kind: "code" } },
       ],
       toDOM(n): DOMOutputSpec {
-        const { kind, level, label } = n.attrs;
+        const { kind, level, label, pfmt } = n.attrs;
         const tag = /^h[1-6]$/.test(kind) ? kind : "p";
-        const attrs: Record<string, string> = { class: `k-${kind} lvl-${level}${label ? " has-label" : ""}`, "data-kind": kind, "data-level": String(level) };
+        const attrs: Record<string, string> = { class: `k-${kind} lvl-${level}${label ? " has-label" : ""}${pfmt ? " pfmtchg" : ""}`, "data-kind": kind, "data-level": String(level) };
+        if (pfmt) attrs["data-wid"] = pfmt;
         if (label) attrs["data-label"] = label;
         return [tag, attrs, 0];
       },
@@ -216,6 +218,12 @@ export const schema = new Schema({
       attrs: changeAttrs,
       inclusive: false,
       toDOM: (m) => ["del", { class: m.attrs.wid ? "chg" : "chg mine", "data-wid": m.attrs.wid, "data-author": m.attrs.author, title: changeTitle("Deleted", m) }, 0],
+    },
+    /** A tracked formatting change (display only: the core keeps the change). */
+    fmtchg: {
+      attrs: { wid: {} },
+      inclusive: false,
+      toDOM: (m) => ["span", { class: "fmtchg", "data-wid": m.attrs.wid, title: "Formatting changed" }, 0],
     },
     comment: {
       attrs: { ids: {} },

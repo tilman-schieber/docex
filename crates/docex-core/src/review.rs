@@ -90,6 +90,8 @@ struct Ch {
     st: Status,
     wid: Option<String>,
     comments: Vec<String>,
+    /// A tracked formatting change on this character.
+    fmt: Option<String>,
 }
 
 struct Range {
@@ -103,6 +105,8 @@ struct Range {
 struct ParaInfo {
     chars: Vec<Ch>,
     section: Vec<String>,
+    /// A tracked paragraph-style change.
+    pfmt: Option<String>,
 }
 
 fn obj_text(o: &str) -> String {
@@ -124,7 +128,7 @@ fn obj_text(o: &str) -> String {
 fn para_chars(p: &MPara) -> Vec<Ch> {
     let mut out = Vec::new();
     for s in &p.spans {
-        let mk = |text: String| Ch { s: text, st: s.st, wid: s.wid.clone(), comments: s.comments.clone() };
+        let mk = |text: String| Ch { s: text, st: s.st, wid: s.wid.clone(), comments: s.comments.clone(), fmt: s.fmt.clone() };
         match &s.obj {
             Some(o) => out.push(mk(obj_text(o))),
             None => out.extend(s.t.chars().map(|c| mk(c.to_string()))),
@@ -195,7 +199,7 @@ pub fn build(model: &DocModel, changes: &[Change], comments: &[Comment]) -> Revi
             }));
         }
         let section = path.iter().map(|(_, t)| t.clone()).collect();
-        paras.push((ParaInfo { chars, section }, part));
+        paras.push((ParaInfo { chars, section, pfmt: p.pfmt.clone() }, part));
     };
     for b in model.boxes.iter().filter(|b| b.after.is_none()) {
         for p in &b.paras {
@@ -250,6 +254,21 @@ pub fn build(model: &DocModel, changes: &[Change], comments: &[Comment]) -> Revi
             } else {
                 i += 1;
             }
+        }
+        // Formatting changes: runs of characters, and whole paragraphs for a style change.
+        let mut i = 0;
+        while i < info.chars.len() {
+            let Some(w) = &info.chars[i].fmt else {
+                i += 1;
+                continue;
+            };
+            let j = i + info.chars[i..].iter().take_while(|c| c.fmt.as_ref() == Some(w)).count();
+            ranges.entry((part, w.clone())).or_default().push(Range { para: pi, start: i, end: j, st: Status::Plain, text: visible(&info.chars[i..j]) });
+            i = j;
+        }
+        if let Some(w) = &info.pfmt {
+            let n = info.chars.len();
+            ranges.entry((part, w.clone())).or_default().push(Range { para: pi, start: 0, end: n, st: Status::Plain, text: visible(&info.chars) });
         }
         for (ci, c) in info.chars.iter().enumerate() {
             for id in &c.comments {
@@ -320,7 +339,10 @@ pub fn build(model: &DocModel, changes: &[Change], comments: &[Comment]) -> Revi
             }
         }
         if it.old.is_none() && it.new.is_none() {
-            it.text = Some(c.text.clone()).filter(|t| !t.is_empty() && t != "¶");
+            // A formatting change: the text it applies to.
+            let shown: String = rs.iter().filter(|r| r.st == Status::Plain).map(|r| r.text.as_str()).collect::<Vec<_>>().join(" ");
+            let shown = shown.trim();
+            it.text = if !shown.is_empty() { Some(trim_after(shown)) } else { Some(c.text.clone()).filter(|t| !t.is_empty() && t != "¶") };
         }
         items.push(it);
     }

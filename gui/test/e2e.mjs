@@ -249,6 +249,13 @@ try {
     const md = cat(f);
     check(md.includes("[{++docs++}](https://docs.example.com)") || md.includes("{++see the [docs](https://docs.example.com)++}") || /\{\+\+[^+]*\[docs\]\(https:\/\/docs\.example\.com\)/.test(md), md);
     check(md.includes("## Goals"), md);
+    // The bolding is a formatting change placed in the text, not "not in the text".
+    check(await editorHas(".fmtchg", "Bullet"), "the formatting change should be marked in the text");
+    check(!(await page.eval(`document.querySelector("#sidebar").textContent.includes("Not in the text")`)), "formatting change listed as not in the text");
+    await page.click(".ProseMirror .fmtchg", "Bullet");
+    await page.waitFor(`!document.getElementById("popover").hidden`);
+    check((await page.eval(`document.getElementById("popover").textContent`)).includes("formatting"), "popover for the formatting change");
+    await page.key("Escape");
     // Undo takes the whole AI edit back.
     await page.key("z", "Control");
     await page.settle();

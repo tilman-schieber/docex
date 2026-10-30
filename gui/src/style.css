@@ -773,6 +773,18 @@ main {
   cursor: pointer;
 }
 
+/* Tracked formatting changes: a dotted underline; style changes: a bar in the margin. */
+.ProseMirror .fmtchg {
+  text-decoration: underline dotted var(--magenta);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
+  cursor: pointer;
+}
+
+.ProseMirror .pfmtchg {
+  box-shadow: -10px 0 0 -7px var(--magenta);
+}
+
 .ProseMirror .cmt {
   background: color-mix(in srgb, var(--yellow) 16%, transparent);
   border-bottom: 2px solid color-mix(in srgb, var(--yellow) 70%, transparent);

@@ -66,6 +66,9 @@ pub struct Span {
     /// Comments anchored on this text (display only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comments: Vec<String>,
+    /// Word id of a tracked formatting change on this text (display only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fmt: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -88,6 +91,9 @@ pub struct MPara {
     /// Word's automatic number ("3.2", "(b)"), for display only; ignored on import.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Word id of a tracked paragraph-style change (display only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pfmt: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -175,8 +181,8 @@ pub fn kind_of(name: &str, level: u8) -> Kind {
     }
 }
 
-/// Change details and comment ids for each atom of a rendered paragraph.
-type Extra = (Option<usize>, Option<(String, String, String)>, Vec<String>);
+/// Change details, comment ids and formatting-change id for each atom of a rendered paragraph.
+type Extra = (Option<usize>, Option<(String, String, String)>, Vec<String>, Option<String>);
 
 fn enrich(p: &Para, e: &EPara) -> Vec<Extra> {
     let map = crate::patch::map_atoms(p, &e.atoms);
@@ -196,7 +202,7 @@ fn enrich(p: &Para, e: &EPara) -> Vec<Extra> {
     }
     map.iter()
         .map(|m| {
-            let Some(ii) = m else { return (None, None, Vec::new()) };
+            let Some(ii) = m else { return (None, None, Vec::new(), None) };
             let it = &p.items[*ii];
             let change = it.ctx.iter().rev().map(|w| &p.wraps[*w]).find(|w| matches!(w.kind, WrapKind::Ins | WrapKind::Del)).map(|w| {
                 (
@@ -205,7 +211,8 @@ fn enrich(p: &Para, e: &EPara) -> Vec<Extra> {
                     w.shell.attr("w:id").unwrap_or("").to_string(),
                 )
             });
-            (Some(*ii), change, at_item[*ii].clone())
+            let fmt = it.run.and_then(|r| p.runs[r].rpr.as_ref()?.child("w:rPrChange")?.attr("w:id").map(String::from));
+            (Some(*ii), change, at_item[*ii].clone(), fmt)
         })
         .collect()
 }
@@ -220,7 +227,7 @@ fn para_to_model(p: Option<&Para>, e: &EPara, known_comments: &HashSet<String>) 
     let (kind, level) = kind_name(e.kind);
     let mut spans: Vec<Span> = Vec::new();
     for (k, a) in e.atoms.iter().enumerate() {
-        let (item, change, comments) = extra.get(k).cloned().unwrap_or((None, None, Vec::new()));
+        let (item, change, comments, fmt) = extra.get(k).cloned().unwrap_or((None, None, Vec::new(), None));
         let comments: Vec<String> = comments.into_iter().filter(|c| known_comments.contains(c)).collect();
         let (author, date, wid) = match (a.st, change) {
             (Status::Plain, _) | (_, None) => (None, None, None),
@@ -242,6 +249,7 @@ fn para_to_model(p: Option<&Para>, e: &EPara, known_comments: &HashSet<String>) 
             date,
             wid,
             comments,
+            fmt,
             ..Default::default()
         };
         let is_obj = a.key.chars().count() != 1 || a.key == "\t" || a.key == "\n";
@@ -264,7 +272,8 @@ fn para_to_model(p: Option<&Para>, e: &EPara, known_comments: &HashSet<String>) 
         s.t = a.key.clone();
         spans.push(s);
     }
-    MPara { kind, level, spans, new_comments: Vec::new(), label: None }
+    let pfmt = p.and_then(|p| p.ppr.as_ref()?.child("w:pPrChange")?.attr("w:id").map(String::from));
+    MPara { kind, level, spans, new_comments: Vec::new(), label: None, pfmt }
 }
 
 fn spans_of(t: &ETable) -> Vec<Vec<[usize; 2]>> {
