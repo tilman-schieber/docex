@@ -315,6 +315,8 @@ fn pair_hunk<F: Fn(usize, usize) -> f32>(oi: usize, on: usize, ni: usize, nn: us
 pub fn block_sim(a: &EBlock, b: &EBlock) -> f32 {
     match (a, b) {
         (EBlock::Para(_), EBlock::Para(_)) | (EBlock::Table(_), EBlock::Table(_)) => similarity(&a.text(), &b.text()),
+        // A control is always itself: its marker names it.
+        (EBlock::Control(x, _), EBlock::Control(y, _)) if x == y => 1.0,
         _ => 0.0,
     }
 }

@@ -15,6 +15,7 @@ fn main() {
             Block::Para(p) if !p.is_empty() => Some(format!("P {:?}: {}", p.kind, p.plain_text().chars().take(60).collect::<String>())),
             Block::Para(_) => None,
             Block::Table(t) => Some(format!("T b{}", t.idx)),
+            Block::Control(c) => Some(format!("C b{}", c.idx)),
             Block::Opaque { idx, .. } => Some(format!("O b{idx}")),
         })
         .collect();
@@ -23,6 +24,7 @@ fn main() {
         .map(|b| match b {
             EBlock::Para(p) => format!("P {:?}: {}", p.kind, p.text().chars().take(60).collect::<String>()),
             EBlock::Table(_) => "T".into(),
+            EBlock::Control(n, _) => format!("C b{n}"),
             EBlock::Opaque(n) => format!("O b{n}"),
         })
         .collect();

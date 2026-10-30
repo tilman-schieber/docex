@@ -142,6 +142,23 @@ export const schema = new Schema({
       isolating: true,
       toDOM: (n) => ["div", { class: "textbox", "data-id": n.attrs.id }, 0],
     },
+    /** A Word content control around paragraphs (template fields, cover pages). */
+    control: {
+      group: "block",
+      content: "para+",
+      attrs: { id: {}, label: { default: "" }, locked: { default: false } },
+      isolating: true,
+      toDOM: (n) => [
+        "div",
+        {
+          class: `control${n.attrs.locked ? " locked" : ""}`,
+          "data-id": String(n.attrs.id),
+          "data-label": `${n.attrs.label || "content control"}${n.attrs.locked ? " · locked" : ""}`,
+          ...(n.attrs.locked ? { contenteditable: "false" } : {}),
+        },
+        0,
+      ],
+    },
     footnote: {
       group: "block",
       content: "para+",

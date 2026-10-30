@@ -210,6 +210,11 @@ pub fn build(model: &DocModel, changes: &[Change], comments: &[Comment]) -> Revi
                     add(p, &mut path, "body", &mut paras);
                 }
             }
+            MBlock::Control { paras: cps, .. } => {
+                for p in cps {
+                    add(p, &mut path, "body", &mut paras);
+                }
+            }
             MBlock::Opaque { .. } => {}
         }
         for bx in model.boxes.iter().filter(|x| x.after == Some(bi)) {

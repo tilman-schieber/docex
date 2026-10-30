@@ -363,6 +363,7 @@ fn markdown_paste_model() {
         .map(|b| match b {
             MBlock::Para(p) => p.kind.clone(),
             MBlock::Table { rows, .. } => format!("table{}", rows.len()),
+            MBlock::Control { .. } => "control".into(),
             MBlock::Opaque { .. } => "opaque".into(),
         })
         .collect();
@@ -759,4 +760,50 @@ fn automatic_numbers_are_worked_out() {
     }).collect();
     assert_eq!(labels[..3], ["1", "1.1", "1.2"]);
     assert!(!d.apply_model(&m, &opts(true)).unwrap().changed());
+}
+
+// Content controls as Word writes them: a field still showing its placeholder,
+// a cover page (with empty spacing paragraphs), a locked one, a table of contents.
+const CONTROLS: &str = r#"<w:sdt><w:sdtPr><w:id w:val="-1"/><w:docPartObj><w:docPartGallery w:val="Cover Pages"/><w:docPartUnique/></w:docPartObj></w:sdtPr><w:sdtContent><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Annual Report</w:t></w:r></w:p><w:p/><w:p><w:r><w:t>Prepared for the board.</w:t></w:r></w:p></w:sdtContent></w:sdt><w:p><w:r><w:t>Customer:</w:t></w:r></w:p><w:sdt><w:sdtPr><w:alias w:val="Customer"/><w:tag w:val="customer"/><w:id w:val="123"/><w:showingPlcHdr/></w:sdtPr><w:sdtEndPr/><w:sdtContent><w:p><w:r><w:rPr><w:rStyle w:val="PlaceholderText"/></w:rPr><w:t>Click here to enter text.</w:t></w:r></w:p></w:sdtContent></w:sdt><w:sdt><w:sdtPr><w:alias w:val="Legal notice"/><w:lock w:val="contentLocked"/></w:sdtPr><w:sdtContent><w:p><w:r><w:t>Do not change this text.</w:t></w:r></w:p></w:sdtContent></w:sdt><w:sdt><w:sdtPr><w:docPartObj><w:docPartGallery w:val="Table of Contents"/></w:docPartObj></w:sdtPr><w:sdtContent><w:p><w:r><w:t>Contents</w:t></w:r></w:p></w:sdtContent></w:sdt><w:p><w:r><w:t>Body text.</w:t></w:r></w:p>"#;
+
+#[test]
+fn content_controls_show_their_paragraphs() {
+    let mut d = docx(CONTROLS);
+    let md = d.render(View::Review);
+    for want in [
+        "<!-- docex:control b0 Cover Pages -->\n\n# Annual Report\n\nPrepared for the board.\n\n<!-- /docex:control -->",
+        "<!-- docex:control b2 Customer -->\n\nClick here to enter text.\n\n<!-- /docex:control -->",
+        "<!-- docex:control b3 Legal notice -->",
+        "<!-- docex:opaque b4 Table of Contents -->",
+    ] {
+        assert!(md.contains(want), "missing {want:?} in\n{md}");
+    }
+    let before = d.dom.to_xml();
+    assert!(!d.apply(&md, &opts(true)).unwrap().changed());
+    assert!(!d.apply_model(&d.model(), &opts(true)).unwrap().changed());
+    assert_eq!(d.dom.to_xml(), before);
+}
+
+#[test]
+fn editing_content_controls() {
+    let mut d = docx(CONTROLS);
+    let md = d
+        .render(View::Review)
+        .replace("Click here to enter text.", "ACME GmbH")
+        .replace("Prepared for the board.", "Prepared for the supervisory board.")
+        .replace("Do not change this text.", "Changed anyway.");
+    let r = d.apply(&md, &opts(true)).unwrap();
+    assert!(r.warnings.iter().any(|w| w.contains("Legal notice") && w.contains("locked")), "{:?}", r.warnings);
+    let mut d = reopen(&mut d);
+    let out = d.render(View::Review);
+    assert!(out.contains("<!-- docex:control b2 Customer -->\n\n{++ACME GmbH++}\n\n"), "{out}");
+    assert!(out.contains("Prepared for the {++supervisory ++}board."), "{out}");
+    assert!(out.contains("Do not change this text."), "{out}");
+    let xml = d.dom.to_xml();
+    // The control stays, its placeholder flag goes; the cover page keeps its empty paragraph.
+    assert!(xml.contains(r#"<w:alias w:val="Customer"/>"#) && !xml.contains("showingPlcHdr"), "{xml}");
+    assert!(xml.contains("<w:p/>"), "{xml}");
+    assert!(!d.apply(&out, &opts(true)).unwrap().changed());
+    // Numbers and review sections see the paragraphs too.
+    assert!(d.review().items.iter().any(|i| i.section.first().is_some_and(|s| s == "Annual Report")));
 }

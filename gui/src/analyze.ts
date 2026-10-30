@@ -177,12 +177,17 @@ export function analyze(doc: PMNode, v: View | null, me: string): Index {
   };
   sections.push(mk(0, "Beginning", 0));
   let inNotes = false;
+  const heading = (n: PMNode, pos: number) => {
+    const title = n.textContent.trim() || "(untitled)";
+    sections.push(mk(Number(n.attrs.kind[1]), n.attrs.label ? `${n.attrs.label} ${title}` : title, pos));
+    inNotes = false;
+  };
+  const isHeading = (n: PMNode) => n.type === schema.nodes.para && /^h[1-6]$/.test(n.attrs.kind);
   doc.forEach((n, pos) => {
-    if (n.type === schema.nodes.para && /^h[1-6]$/.test(n.attrs.kind)) {
-      const title = n.textContent.trim() || "(untitled)";
-      sections.push(mk(Number(n.attrs.kind[1]), n.attrs.label ? `${n.attrs.label} ${title}` : title, pos));
-      inNotes = false;
-    } else if (n.type === schema.nodes.footnote && !inNotes) {
+    if (isHeading(n)) heading(n, pos);
+    // Headings inside a content control (a cover page's title).
+    else if (n.type === schema.nodes.control) n.forEach((c, off) => isHeading(c) && heading(c, pos + 1 + off));
+    else if (n.type === schema.nodes.footnote && !inNotes) {
       sections.push(mk(1, "Footnotes", pos));
       inNotes = true;
     }

@@ -89,6 +89,16 @@ pub enum MBlock {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         spans: Vec<Vec<[usize; 2]>>,
     },
+    /// The paragraphs of a content control (`id` is its block).
+    Control {
+        id: usize,
+        #[serde(default)]
+        label: String,
+        paras: Vec<MPara>,
+        /// Locked against editing in Word; shown read-only.
+        #[serde(default)]
+        locked: bool,
+    },
     /// Content docex does not edit (TOC, content control, complex table).
     Opaque {
         id: usize,
@@ -252,7 +262,7 @@ pub fn from_markdown(md: &str) -> DocModel {
                 rows: rows.iter().map(|r| r.iter().map(|c| c.paras.iter().map(|e| para_to_model(None, e, &none)).collect()).collect()).collect(),
                 spans: spans_of(rows),
             },
-            EBlock::Opaque(_) => continue,
+            EBlock::Control(..) | EBlock::Opaque(_) => continue,
         });
     }
     out
@@ -306,6 +316,21 @@ pub fn export(
                 rows: rows.iter().map(|r| r.iter().map(|c| c.paras.iter().map(|e| para_to_model(None, e, known_comments)).collect()).collect()).collect(),
                 spans: spans_of(rows),
             },
+            (EBlock::Control(n, eps), b) => {
+                let (label, locked, paras): (String, bool, Vec<&Para>) = match b {
+                    Some(Block::Control(c)) => {
+                        let used = rendered.controls.iter().find(|(bi, _)| Some(bi) == rendered.map.get(i)).map(|(_, u)| u.as_slice()).unwrap_or(&[]);
+                        (c.label.clone(), c.locked, used.iter().map(|k| &c.paras[*k]).collect())
+                    }
+                    _ => (String::new(), false, Vec::new()),
+                };
+                MBlock::Control {
+                    id: *n,
+                    label,
+                    locked,
+                    paras: eps.iter().enumerate().map(|(k, e)| with_label(para_to_model(paras.get(k).copied(), e, known_comments), paras.get(k).copied(), labels)).collect(),
+                }
+            }
             (EBlock::Opaque(n), b) => {
                 let (label, preview) = match b {
                     Some(Block::Opaque { label, .. }) => (label.clone(), String::new()),
@@ -418,6 +443,9 @@ pub fn import(m: &DocModel) -> Parsed {
                     })
                     .collect(),
             )),
+            MBlock::Control { id, paras, .. } => {
+                blocks.push(EBlock::Control(*id, paras.iter().map(para_from_model).filter(|e| !e.atoms.is_empty() || !e.comments.is_empty()).collect()))
+            }
             MBlock::Opaque { id, .. } => blocks.push(EBlock::Opaque(*id)),
         }
     }

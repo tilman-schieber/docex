@@ -48,6 +48,8 @@ pub struct Rendered {
     pub notes: Vec<(String, Vec<usize>)>,
     /// For every text box: index into the boxes and its rendered paragraphs.
     pub boxes: Vec<(usize, Vec<usize>)>,
+    /// For every content control: its block index and its rendered paragraphs.
+    pub controls: Vec<(usize, Vec<usize>)>,
 }
 
 pub const HEADER: &str = "<!-- docex: edit freely. {++insert++} {--delete--} {~~old~>new~~} {>>comment<<} -->";
@@ -73,6 +75,8 @@ enum Tok {
     Marker(String),
 }
 
+pub const CONTROL_START: &str = "docex:control";
+pub const CONTROL_END: &str = "/docex:control";
 pub const BOX_START: &str = "docex:textbox";
 pub const BOX_END: &str = "/docex:textbox";
 
@@ -81,6 +85,7 @@ pub fn render(blocks: &[Block], cx: &RenderCtx) -> Rendered {
     let mut out = String::new();
     let mut map = Vec::new();
     let mut box_map = Vec::new();
+    let mut control_map = Vec::new();
     if cx.view == View::Review {
         out.push_str(HEADER);
     }
@@ -184,6 +189,33 @@ pub fn render(blocks: &[Block], cx: &RenderCtx) -> Rendered {
                 }
                 map.push(bi);
             }
+            Block::Control(c) => {
+                // Its paragraphs between markers: headings stay headings,
+                // everything else is a plain paragraph.
+                close_code(&mut out, &mut in_code);
+                sep(&mut out, false);
+                list_stack.clear();
+                prev_list = false;
+                prev_top = None;
+                out.push_str(&format!("<!-- {CONTROL_START} b{} {} -->", c.idx, c.label.replace("--", "-")));
+                let mut used = Vec::new();
+                for (pi, p) in c.paras.iter().enumerate() {
+                    let heading = matches!(p.kind, Kind::Heading(_));
+                    if let Some(text) = inline(p, Mode { heading, ..Default::default() }, cx) {
+                        sep(&mut out, false);
+                        if let Kind::Heading(n) = p.kind {
+                            out.push_str(&"#".repeat(n as usize));
+                            out.push(' ');
+                        }
+                        out.push_str(&labelled(p, text, cx));
+                        used.push(pi);
+                    }
+                }
+                sep(&mut out, false);
+                out.push_str(&format!("<!-- {CONTROL_END} -->"));
+                map.push(bi);
+                control_map.push((bi, used));
+            }
             Block::Opaque { idx, label } => {
                 close_code(&mut out, &mut in_code);
                 sep(&mut out, false);
@@ -216,7 +248,7 @@ pub fn render(blocks: &[Block], cx: &RenderCtx) -> Rendered {
         note_map.push((n.label.clone(), used));
     }
     out.push('\n');
-    Rendered { md: out, map, notes: note_map, boxes: box_map }
+    Rendered { md: out, map, notes: note_map, boxes: box_map, controls: control_map }
 }
 
 /// Emit the text boxes anchored in body block `anchor`. Returns whether any were written.

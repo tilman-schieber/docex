@@ -65,6 +65,8 @@ function block(b: MBlock): PMNode {
           ),
         ),
       );
+    case "control":
+      return nodes.control.create({ id: b.id, label: b.label, locked: !!b.locked }, paras(b.paras));
     case "opaque":
       return nodes.opaque.create({ id: b.id, label: b.label, preview: b.preview });
   }
@@ -151,6 +153,8 @@ export function docToModel(doc: PMNode, pending?: PendingComment): DocModel {
       });
       const merged = spans.some((r) => r.some(([c, s]) => c !== 1 || s !== 1));
       m.blocks.push(merged ? { type: "table", rows, spans } : { type: "table", rows });
+    } else if (n.type === nodes.control) {
+      m.blocks.push({ type: "control", id: n.attrs.id, label: n.attrs.label, locked: n.attrs.locked, paras: parasIn(n, pos, pending) });
     } else if (n.type === nodes.opaque) {
       m.blocks.push({ type: "opaque", id: n.attrs.id, label: n.attrs.label, preview: n.attrs.preview });
     } else if (n.type === nodes.textbox) {

@@ -62,9 +62,10 @@ Files are changed in place with a `FILE.docx~` backup. Use `-o OUT.docx` to writ
 | Equations (Office Math) | `$E=mc^2$` inline, `$$\int_0^1 x\,dx$$` on its own line |
 | Footnotes, endnotes | `[^1]` with `[^1]: text` at the end (endnotes `[^e1]`) |
 | Text boxes | `<!-- docex:textbox tb1 -->` … paragraphs … `<!-- /docex:textbox -->` after the paragraph they're anchored in |
+| Content controls around paragraphs (template fields, cover pages) | `<!-- docex:control b5 Customer -->` … paragraphs … `<!-- /docex:control -->`; edited inside the control, locked ones stay read-only, typing into a placeholder replaces it |
 | Tracked insertion / deletion | `{++new++}` / `{--old--}` |
 | Comment | `{==anchored text==}{>>Author: comment<<}` |
-| TOC, content controls, shapes, equations, page breaks | `<!-- docex:… -->` placeholders, kept as-is |
+| TOC, shapes, equations docex can't convert, page breaks | `<!-- docex:… -->` placeholders, kept as-is |
 
 You can write CriticMarkup yourself: `{++text++}`, `{--text--}` and `{~~old~>new~~}` are always recorded as tracked changes, even with tracking off. A new `{==text==}{>>remark<<}` (or a bare `{>>remark<<}`) becomes a Word comment. New images referenced by path (PNG, JPEG, GIF) are embedded and sized to the page width.
 
@@ -96,6 +97,7 @@ Things deliberately left out: spacing, fonts, colours, page layout. New text tak
 `gui/` is a desktop editor on the same core (Tauri + ProseMirror). It shows the document formatted:
 - tracked changes in color; click one in the text to see who made it, accept or reject it, or comment on it (a replacement is decided as a whole, as in the sidebar)
 - comments, which you can add, reply to, resolve or delete
+- content controls (template fields, cover pages) with their name above them; locked ones read-only
 - tables, including merged cells: add and remove rows and columns, merge cells (drag across them) and split them
 - images, footnotes, text boxes and captions
 

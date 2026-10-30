@@ -613,6 +613,10 @@ fn blocks_json(doc: &Docx, view: View) -> serde_json::Value {
                     .collect();
                 out.push(serde_json::json!({ "id": format!("b{}", t.idx), "type": "table", "editable": t.editable(), "rows": rows }));
             }
+            Block::Control(c) => {
+                let paras: Vec<String> = c.paras.iter().map(|p| view_text(p, view)).collect();
+                out.push(serde_json::json!({ "id": format!("b{}", c.idx), "type": "control", "label": c.label, "editable": !c.locked, "paragraphs": paras }));
+            }
             Block::Opaque { idx, label } => {
                 out.push(serde_json::json!({ "id": format!("b{idx}"), "type": "opaque", "label": label }));
             }

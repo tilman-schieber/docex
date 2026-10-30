@@ -696,6 +696,26 @@ main {
   color: var(--faint);
 }
 
+/* Content controls: the template field's name above its text. */
+.ProseMirror .control {
+  border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+  padding: 16px 12px 2px;
+  margin: 0.6em 0;
+  position: relative;
+}
+
+.ProseMirror .control::before {
+  content: attr(data-label);
+  position: absolute;
+  top: 2px;
+  left: 12px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--faint);
+}
+
 .ProseMirror .footnote {
   font-size: 0.86em;
   border-top: 1px solid var(--hair);

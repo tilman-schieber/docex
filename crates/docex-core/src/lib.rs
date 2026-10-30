@@ -269,6 +269,7 @@ impl Docx {
             match b {
                 Block::Para(p) => visit(p),
                 Block::Table(t) => t.rows.iter().flat_map(|r| &r.cells).flat_map(|c| &c.paras).for_each(&mut visit),
+                Block::Control(c) => c.paras.iter().for_each(&mut visit),
                 Block::Opaque { .. } => {}
             }
         }
@@ -446,6 +447,39 @@ impl Docx {
                                 }
                             }
                         }
+                        (Block::Control(c), mdparse::EBlock::Control(_, o), mdparse::EBlock::Control(_, n)) => {
+                            if c.locked {
+                                cx.warnings.push(format!("content control \"{}\" is locked against editing; left unchanged", c.label));
+                            } else if let Some(Node::Element(sdt)) = body_el.children.get(c.idx) {
+                                let used = r0.controls.iter().find(|(b, _)| *b == bi).map(|(_, u)| u.clone()).unwrap_or_default();
+                                let paras: Vec<model::Para> = used.iter().map(|k| c.paras[*k].clone()).collect();
+                                if let Some(Node::Element(content)) = sdt.children.get(c.content) {
+                                    // Typing into a placeholder replaces it, as in Word: only the new text is tracked.
+                                    let res = if c.placeholder {
+                                        let mut nc = content.shell();
+                                        let ppr = c.paras.first().and_then(|p| p.ppr.clone());
+                                        for e in n {
+                                            nc.children.push(patch::new_cell_para(e, ppr.clone(), None, &mut cx));
+                                        }
+                                        if n.is_empty() {
+                                            nc.children.push(patch::new_cell_para(&mdparse::EPara { kind: styles::Kind::Normal, atoms: Vec::new(), comments: Vec::new() }, ppr, None, &mut cx));
+                                        }
+                                        Some(nc)
+                                    } else {
+                                        patch::patch_paras(content, &paras, o, n, &mut cx)
+                                    };
+                                    if let Some(nc) = res {
+                                        let mut sdt = sdt.clone();
+                                        sdt.children[c.content] = nc.into();
+                                        // Real text now: Word must not treat it as the placeholder.
+                                        if let Some(pr) = sdt.child_mut("w:sdtPr") {
+                                            pr.remove_children("w:showingPlcHdr");
+                                        }
+                                        sp.replace.insert(c.idx, vec![sdt.into()]);
+                                    }
+                                }
+                            }
+                        }
                         _ => cx.warnings.push(format!("block b{} changed type; left unchanged", blocks[bi].body_idx())),
                     }
                     anchor = Some(i);
@@ -480,6 +514,10 @@ impl Docx {
                     let node = match &new_blocks[j] {
                         mdparse::EBlock::Para(e) => patch::new_para(e, near, &mut cx),
                         mdparse::EBlock::Table(rows) => patch::new_table(rows, &mut cx),
+                        mdparse::EBlock::Control(n, _) => {
+                            cx.warnings.push(format!("content control b{n} cannot be copied or moved; ignored"));
+                            continue;
+                        }
                         mdparse::EBlock::Opaque(n) => {
                             if !opts.keep_opaque {
                                 cx.warnings.push(format!("placeholder b{n} cannot be copied or moved; ignored"));

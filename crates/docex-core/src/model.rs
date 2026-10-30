@@ -197,7 +197,24 @@ pub struct TextBox {
 pub enum Block {
     Para(Para),
     Table(Table),
+    /// A content control around whole paragraphs (title, date, customer
+    /// fields of templates; cover pages). Its paragraphs are edited inside it.
+    Control(Control),
     Opaque { idx: usize, label: String },
+}
+
+#[derive(Clone, Debug)]
+pub struct Control {
+    pub idx: usize,
+    /// Its name (alias, tag or building block gallery).
+    pub label: String,
+    /// Child index of `w:sdtContent` in the `w:sdt`.
+    pub content: usize,
+    pub paras: Vec<Para>,
+    /// Locked against editing in Word (`w:lock` contentLocked).
+    pub locked: bool,
+    /// Still showing its placeholder ("Click here to enter text").
+    pub placeholder: bool,
 }
 
 impl Block {
@@ -205,6 +222,7 @@ impl Block {
         match self {
             Block::Para(p) => p.path[0],
             Block::Table(t) => t.idx,
+            Block::Control(c) => c.idx,
             Block::Opaque { idx, .. } => *idx,
         }
     }
@@ -343,6 +361,7 @@ pub fn project(body: &Element, cx: &Ctx) -> Vec<Block> {
         match e.name.as_str() {
             "w:p" => out.push(Block::Para(para(e, vec![i], cx))),
             "w:tbl" => out.push(Block::Table(table(e, i, cx))),
+            "w:sdt" => out.push(control(e, i, cx).map(Block::Control).unwrap_or_else(|| Block::Opaque { idx: i, label: opaque_label(e) })),
             "w:sectPr" | "w:bookmarkStart" | "w:bookmarkEnd" | "w:proofErr" | "w:permStart"
             | "w:permEnd" | "w:commentRangeStart" | "w:commentRangeEnd" | "w:moveFromRangeStart"
             | "w:moveFromRangeEnd" | "w:moveToRangeStart" | "w:moveToRangeEnd" => {}
@@ -420,6 +439,34 @@ pub fn text_boxes(body: &Element, cx: &Ctx) -> Vec<TextBox> {
             Some(TextBox { id: format!("tb{}", n + 1), anchor, paras: container_paras(cur, &targets[0], cx), targets })
         })
         .collect()
+}
+
+/// A block-level content control holding only paragraphs (not a table of contents).
+fn control(e: &Element, idx: usize, cx: &Ctx) -> Option<Control> {
+    let pr = e.child("w:sdtPr");
+    let gallery = pr.and_then(|p| p.child_path(&["w:docPartObj", "w:docPartGallery"])).and_then(|g| g.attr("w:val"));
+    if gallery.is_some_and(|g| g.to_lowercase().contains("table of contents")) {
+        return None;
+    }
+    let content = e.children.iter().position(|c| matches!(c, Node::Element(x) if x.is("w:sdtContent")))?;
+    let Node::Element(sc) = &e.children[content] else { return None };
+    let mut paras = Vec::new();
+    for (k, c) in sc.children.iter().enumerate() {
+        let Node::Element(x) = c else { continue };
+        match x.name.as_str() {
+            "w:p" => paras.push(para(x, vec![idx, content, k], cx)),
+            "w:bookmarkStart" | "w:bookmarkEnd" | "w:proofErr" | "w:permStart" | "w:permEnd" | "w:commentRangeStart" | "w:commentRangeEnd" => {}
+            _ => return None,
+        }
+    }
+    if paras.is_empty() {
+        return None;
+    }
+    let attr = |name: &str| pr.and_then(|p| p.child(name)).and_then(|a| a.attr("w:val")).filter(|v| !v.is_empty());
+    let label = attr("w:alias").or(attr("w:tag")).or(gallery).unwrap_or("content control").to_string();
+    let locked = matches!(attr("w:lock"), Some("contentLocked" | "sdtContentLocked"));
+    let placeholder = pr.is_some_and(|p| p.child("w:showingPlcHdr").is_some());
+    Some(Control { idx, label, content, paras, locked, placeholder })
 }
 
 fn opaque_label(e: &Element) -> String {

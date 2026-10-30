@@ -57,6 +57,8 @@ pub fn is_grid(t: &ETable) -> bool {
 pub enum EBlock {
     Para(EPara),
     Table(ETable),
+    /// The paragraphs of content control `b{n}`.
+    Control(usize, Vec<EPara>),
     Opaque(usize),
 }
 
@@ -91,6 +93,13 @@ impl EBlock {
                 }
                 s
             }
+            EBlock::Control(n, paras) => {
+                let mut s = format!("C{n}");
+                for p in paras {
+                    s.push_str(&format!("\u{1}{:?}|{}|{}", p.kind, atoms_key(&p.atoms), p.comments.iter().map(|c| format!("{}-{}:{}", c.start, c.end, c.text)).collect::<Vec<_>>().join("\u{2}")));
+                }
+                s
+            }
             EBlock::Opaque(n) => format!("O{n}"),
         }
     }
@@ -104,6 +113,7 @@ impl EBlock {
                 .flat_map(|r| r.iter().flat_map(|c| c.paras.iter().map(|p| p.text())))
                 .collect::<Vec<_>>()
                 .join(" "),
+            EBlock::Control(_, paras) => paras.iter().map(|p| p.text()).collect::<Vec<_>>().join(" "),
             EBlock::Opaque(n) => format!("\u{0}opaque{n}"),
         }
     }
@@ -341,6 +351,8 @@ struct P {
     /// Text box sections: id -> paragraphs.
     boxes: Vec<(String, Vec<EPara>)>,
     in_box: bool,
+    /// Inside content control `b{n}`: its paragraphs so far.
+    control: Option<(usize, Vec<EPara>)>,
     table: Option<ETable>,
     row: Option<Vec<ECell>>,
     cell: Option<Vec<EPara>>,
@@ -401,6 +413,15 @@ impl P {
                     if !p.atoms.is_empty() || !p.comments.is_empty() {
                         paras.push(p);
                     }
+                }
+                return;
+            }
+            if let Some((_, paras)) = &mut self.control {
+                if !matches!(p.kind, Kind::Heading(_)) {
+                    p.kind = Kind::Normal;
+                }
+                if !p.atoms.is_empty() || !p.comments.is_empty() {
+                    paras.push(p);
                 }
                 return;
             }
@@ -633,6 +654,7 @@ pub fn parse_full(src: &str) -> Parsed {
         in_note: false,
         boxes: Vec::new(),
         in_box: false,
+        control: None,
         table: None,
         row: None,
         cell: None,
@@ -684,7 +706,15 @@ pub fn parse_full(src: &str) -> Parsed {
                 Event::Html(t) | Event::Text(t) => buf.push_str(&t),
                 Event::End(TagEnd::HtmlBlock) => {
                     let buf = p.html.take().unwrap();
-                    if buf.contains(crate::render::BOX_END) {
+                    if buf.contains(crate::render::CONTROL_END) {
+                        p.close_para();
+                        if let Some((n, paras)) = p.control.take() {
+                            p.blocks.push(EBlock::Control(n, paras));
+                        }
+                    } else if let Some(n) = opaque_id(&buf, &format!("{} b", crate::render::CONTROL_START)) {
+                        p.close_para();
+                        p.control = Some((n, Vec::new()));
+                    } else if buf.contains(crate::render::BOX_END) {
                         p.close_para();
                         p.in_box = false;
                     } else if let Some(i) = buf.find(crate::render::BOX_START) {
@@ -902,6 +932,7 @@ mod tests {
             .map(|b| match b {
                 EBlock::Para(p) => format!("{:?}", p.kind),
                 EBlock::Table(r) => format!("T{}x{}:{}", r.len(), r[1].len(), r[1][0].paras.len()),
+                EBlock::Control(n, _) => format!("C{n}"),
                 EBlock::Opaque(n) => format!("O{n}"),
             })
             .collect();

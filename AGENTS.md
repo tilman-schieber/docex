@@ -38,6 +38,7 @@ Rules:
 - **Footnotes:** edit the `[^n]: text` definitions at the end. To add one, put `[^new]` in the text and `[^new]: text` at the end.
 - **Tables:** edit cells in place; add or remove rows and columns. Pipe tables: inside a cell, write `|` as `\|`. Tables with merged cells are HTML (`<table>`, one `<td>` per line, `colspan`/`rowspan`); a cell covered by a `rowspan` from above is not listed in its row. Cell text is docex Markdown, `<br>` separates paragraphs. To merge, widen one cell's span and remove the cells it now covers. Keep the table free of blank lines. Blocks marked `docex-table` are read-only.
 - **Text boxes:** edit the paragraphs between `<!-- docex:textbox tbN -->` and `<!-- /docex:textbox -->`. Leave the marker lines alone.
+- **Content controls** (template fields such as customer or date, cover pages): edit the paragraphs between `<!-- docex:control bN Name -->` and `<!-- /docex:control -->`; leave the markers. Text that is still the placeholder ("Click here to enter text.") is replaced as a whole. Locked controls refuse edits.
 
 ## Machine-readable output
 
