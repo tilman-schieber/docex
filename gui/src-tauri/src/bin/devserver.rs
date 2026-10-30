@@ -10,6 +10,8 @@
 #[allow(dead_code)]
 #[path = "../backend.rs"]
 mod backend;
+#[path = "../recovery.rs"]
+mod recovery;
 #[path = "../snapshot.rs"]
 mod snapshot;
 
@@ -54,6 +56,10 @@ fn dispatch(st: &AppState, cmd: &str, a: &Value) -> Result<Value, String> {
         "snapshot_swap" => to(backend::snapshot_swap(arg(a, "path")?, arg(a, "paras")?)),
         "snapshot_put" => to(backend::snapshot_put(arg(a, "path")?, arg(a, "paras")?)?),
         "md_to_model" => to(backend::md_to_model(arg(a, "md")?)),
+        "recovery_put" => to(backend::recovery_put(st, arg(a, "model")?, arg(a, "tracked")?)?),
+        "recovery_check" => to(backend::recovery_check(arg(a, "path")?)),
+        "recovery_open" => to(backend::recovery_open(st, arg(a, "path")?)?),
+        "recovery_clear" => to(backend::recovery_clear(arg(a, "path")?)),
         "get_author" => to(backend::get_author(st)),
         "set_author" => to(backend::set_author(st, arg(a, "name")?)),
         // No AI in tests: nothing is configured.

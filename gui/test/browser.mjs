@@ -172,7 +172,7 @@ class Page {
   async key(key, ...mods) {
     const bits = { Alt: 1, Control: 2, Meta: 4, Shift: 8 };
     const modifiers = mods.reduce((m, k) => m | bits[k], 0);
-    const named = { Enter: [13, "\r"], Escape: [27, ""], ArrowRight: [39, ""], ArrowLeft: [37, ""], ArrowDown: [40, ""], ArrowUp: [38, ""], Backspace: [8, ""], Tab: [9, ""] };
+    const named = { Enter: [13, "\r"], Escape: [27, ""], End: [35, ""], Home: [36, ""], ArrowRight: [39, ""], ArrowLeft: [37, ""], ArrowDown: [40, ""], ArrowUp: [38, ""], Backspace: [8, ""], Tab: [9, ""] };
     const [code, text] = named[key] ?? [key.toUpperCase().charCodeAt(0), key];
     const base = { key, windowsVirtualKeyCode: code, modifiers, code: key.length === 1 ? `Key${key.toUpperCase()}` : key };
     await this.send("Input.dispatchKeyEvent", { type: text && !modifiers ? "keyDown" : "rawKeyDown", ...base, ...(text && !modifiers ? { text } : {}) });

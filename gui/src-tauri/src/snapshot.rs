@@ -15,14 +15,20 @@ pub struct Snapshot {
     pub paras: Vec<String>,
 }
 
-fn dir() -> Option<PathBuf> {
+/// docex's data directory (`$XDG_DATA_HOME/docex`, else `~/.local/share/docex`).
+pub fn data_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
-    Some(base.join("docex").join("snapshots"))
+    Some(base.join("docex"))
 }
 
-fn key(path: &str) -> String {
+fn dir() -> Option<PathBuf> {
+    Some(data_dir()?.join("snapshots"))
+}
+
+/// A file name for data kept about a document, from its (absolute) path.
+pub fn key(path: &str) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in path.bytes() {
         h ^= b as u64;
@@ -31,7 +37,7 @@ fn key(path: &str) -> String {
     format!("{h:016x}.json")
 }
 
-fn abs(path: &str) -> String {
+pub fn abs(path: &str) -> String {
     std::fs::canonicalize(path).map(|p| p.display().to_string()).unwrap_or_else(|_| path.to_string())
 }
 

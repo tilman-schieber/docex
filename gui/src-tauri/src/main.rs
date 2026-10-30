@@ -3,6 +3,7 @@
 
 mod ai;
 mod backend;
+mod recovery;
 mod snapshot;
 
 use backend::{AppState, Theme, View};
@@ -105,6 +106,26 @@ fn snapshot_put(path: String, paras: Vec<String>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn recovery_put(state: State<AppState>, model: DocModel, tracked: bool) -> Result<(), String> {
+    backend::recovery_put(&state, model, tracked)
+}
+
+#[tauri::command]
+fn recovery_check(path: String) -> Option<String> {
+    backend::recovery_check(path)
+}
+
+#[tauri::command]
+fn recovery_open(state: State<AppState>, path: String) -> Result<View, String> {
+    backend::recovery_open(&state, path)
+}
+
+#[tauri::command]
+fn recovery_clear(path: String) {
+    backend::recovery_clear(path)
+}
+
+#[tauri::command]
 fn md_to_model(md: String) -> DocModel {
     backend::md_to_model(md)
 }
@@ -184,6 +205,10 @@ fn main() {
             image_data,
             theme,
             md_to_model,
+            recovery_put,
+            recovery_check,
+            recovery_open,
+            recovery_clear,
             get_author,
             set_author
         ])

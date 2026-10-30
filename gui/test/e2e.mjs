@@ -171,6 +171,26 @@ try {
     await page.settle();
     check(!(await page.eval(`[...document.querySelectorAll("#sidebar .pill")].some((p) => p.textContent.includes("For me"))`)), "answered thread still waiting on me");
   });
+
+  await scenario("unsaved edits survive a crash", async () => {
+    const f = scratch(dir, "charts.docx");
+    await page.open(f);
+    await page.click(".ProseMirror p", "Revenue grew");
+    await page.key("End");
+    await page.type(" Recovered text.");
+    await new Promise((r) => setTimeout(r, 5000));
+    // "Crash": the page goes away without saving; open the file again.
+    await page.open(f);
+    check(!cat(f).includes("Recovered text."), "the file itself must be unchanged");
+    await page.waitFor(`document.querySelector(".ProseMirror").textContent.includes("Recovered text.")`);
+    check((await toast()).includes("restored"), `toast: ${await toast()}`);
+    check(await page.eval(`!!document.querySelector("#status .dirty")`), "restored edits should count as unsaved");
+    await page.key("s", "Control");
+    await page.settle();
+    check(cat(f).includes("Recovered text."), "save should write the restored edits");
+    await page.open(f);
+    check(!(await toast()).includes("restored"), "nothing to restore after saving");
+  });
 } finally {
   await close();
 }

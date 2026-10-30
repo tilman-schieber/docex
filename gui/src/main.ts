@@ -344,6 +344,7 @@ const view = new EditorView($("#editor"), {
     view.updateState(view.state.apply(t));
     if (t.docChanged) {
       cockpit.refreshSoon();
+      keepRecoverySoon();
       if (!localDirty) {
         localDirty = true;
         renderStatus();
@@ -535,6 +536,7 @@ function load(v: View, keepSelection = true) {
   for (const [k, url] of Object.entries(v.images)) imageUrls.set(k, url);
   setGraphics(v.model.graphics);
   reviewLog.resetFor(v.path);
+  if (v.dirty) keepRecoverySoon();
   const sel = view.state.selection;
   const doc = modelToDoc(v.model);
   let state = EditorState.create({ doc, plugins: plugins() });
@@ -612,7 +614,38 @@ async function call(cmd: string, args: Record<string, unknown> = {}, withModel =
 
 async function confirmDiscard() {
   if (!isDirty()) return true;
-  return ask("Discard unsaved changes?", { title: "docex", kind: "warning" });
+  const yes = await ask("Discard unsaved changes?", { title: "docex", kind: "warning" });
+  if (yes) dropRecovery();
+  return yes;
+}
+
+// Crash recovery: while there are unsaved changes, the backend keeps a copy of
+// the document with them a few seconds after the last edit. Saving or
+// discarding removes it; opening the file again offers it.
+let recoveryTimer: number | undefined;
+
+function keepRecoverySoon() {
+  clearTimeout(recoveryTimer);
+  recoveryTimer = window.setTimeout(() => {
+    if (current?.path && isDirty()) void invoke("recovery_put", { model: model(), tracked: tracking }).catch(() => {});
+  }, 4000);
+}
+
+function dropRecovery() {
+  clearTimeout(recoveryTimer);
+  if (current?.path) void invoke("recovery_clear", { path: current.path }).catch(() => {});
+}
+
+/** After opening `path`: restore unsaved edits from a crash, if the user wants them. */
+async function offerRecovery(path: string) {
+  const saved = await invoke<string | null>("recovery_check", { path }).catch(() => null);
+  if (!saved) return;
+  const when = new Date(saved).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  const restore = await ask(`docex closed with unsaved changes to ${basename(path)} (${when}). Restore them?\n\nThe file itself is unchanged until you save.`, { title: "docex", kind: "warning", okLabel: "Restore", cancelLabel: "Discard" });
+  if (restore) {
+    await call("recovery_open", { path }, false);
+    toast("Unsaved changes restored. Save to keep them.");
+  } else void invoke("recovery_clear", { path }).catch(() => {});
 }
 
 async function openFile(path?: string) {
@@ -626,6 +659,7 @@ async function openFile(path?: string) {
   if (v?.path) {
     const recent = [v.path, ...recentFiles().filter((r) => r !== v.path)].slice(0, 12);
     localStorage.setItem("docex-recent", JSON.stringify(recent));
+    await offerRecovery(v.path);
   }
   view.focus();
 }
@@ -1085,7 +1119,9 @@ document.addEventListener("mousedown", (e) => {
 });
 
 void getCurrentWindow().onCloseRequested(async (e) => {
-  if (isDirty() && !(await ask("Close without saving?", { title: "docex", kind: "warning" }))) e.preventDefault();
+  if (!isDirty()) return;
+  if (await ask("Close without saving?", { title: "docex", kind: "warning" })) dropRecovery();
+  else e.preventDefault();
 });
 
 (async () => {

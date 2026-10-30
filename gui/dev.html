@@ -38,7 +38,12 @@
           if (cmd === "initial_path") return file;
           if (cmd.startsWith("plugin:event|")) return ++next;
           if (cmd.startsWith("plugin:window|")) return null;
-          if (cmd === "plugin:dialog|ask" || cmd === "plugin:dialog|confirm") return true;
+          // ask() / confirm() are messages with buttons: answer with the confirming one.
+          if (cmd === "plugin:dialog|message") {
+            const b = args.buttons;
+            if (b && typeof b === "object") return (b.OkCancelCustom ?? b.YesNoCancelCustom ?? [b.OkCustom])[0];
+            return b === "YesNo" || b === "YesNoCancel" ? "Yes" : "Ok";
+          }
           if (cmd === "plugin:dialog|save") return window.__DOCEX_DEV__.saveAs;
           if (cmd.startsWith("plugin:")) return null;
           const r = await fetch(`/invoke/${cmd}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(args) });

@@ -2,7 +2,7 @@
 //! desktop app wraps them as Tauri commands, the dev server (`docex-devserver`)
 //! serves them over HTTP for browser tests.
 
-use crate::snapshot;
+use crate::{recovery, snapshot};
 use base64::Engine;
 use docex_core::comments::Comment;
 use docex_core::docmodel::DocModel;
@@ -296,6 +296,7 @@ pub fn save(state: &AppState, model: DocModel, tracked: bool, path: Option<Strin
         std::fs::write(&tmp, bytes).map_err(err)?;
         std::fs::rename(&tmp, &dest).map_err(err)?;
         s.dirty = false;
+        recovery::clear(&dest.display().to_string());
         Ok(())
     })
 }
@@ -368,6 +369,38 @@ pub fn snapshot_put(path: String, paras: Vec<String>) -> Result<(), String> {
 }
 
 /// Markdown (e.g. pasted text) as a document model fragment.
+/// Keep a recovery copy of the open document with the editor's unsaved
+/// content, made on a copy: the session (and the editor) stay as they are.
+pub fn recovery_put(state: &AppState, model: DocModel, tracked: bool) -> Result<(), String> {
+    let author = author_of(state);
+    let mut guard = state.session.lock().unwrap();
+    let s = guard.as_mut().ok_or("no document open")?;
+    let Some(path) = s.path.clone() else { return Ok(()) };
+    let mut copy = Docx::from_bytes(s.doc.to_bytes().map_err(err)?).map_err(err)?;
+    let opts = ApplyOpts { author, date: now_iso(), tracked, base_dir: None, keep_opaque: false };
+    copy.apply_model(&model, &opts).map_err(err)?;
+    recovery::put(&path.display().to_string(), &copy.to_bytes().map_err(err)?, now_iso())
+}
+
+/// When the recovery copy of `path` was written, if there is one to offer.
+pub fn recovery_check(path: String) -> Option<String> {
+    recovery::get(&path).map(|(_, saved)| saved)
+}
+
+/// Open the recovery copy in place of `path` (unsaved, so the file stays as it is until saved).
+pub fn recovery_open(state: &AppState, path: String) -> Result<View, String> {
+    let (bytes, _) = recovery::get(&path).ok_or("the recovery copy is gone")?;
+    let doc = Docx::from_bytes(bytes).map_err(err)?;
+    let s = Session { doc, path: Some(PathBuf::from(&path)), dirty: true, backed_up: false, undo: Vec::new() };
+    let v = view(&s, Vec::new())?;
+    *state.session.lock().unwrap() = Some(s);
+    Ok(v)
+}
+
+pub fn recovery_clear(path: String) {
+    recovery::clear(&path);
+}
+
 pub fn md_to_model(md: String) -> DocModel {
     docex_core::docmodel::from_markdown(&md)
 }
