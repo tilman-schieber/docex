@@ -51,7 +51,8 @@ Its focus is the part of working with Word documents that takes the most time: *
 - **Decide quickly.** Accept or reject one change, everything by one person, everything in a section, or the same edit made in forty places at once. Triage mode walks through them one at a time with single keys. Every decision can be undone.
 - **Keep track.** A progress bar shows how much you've reviewed; when you're done, docex writes a summary of what you took and what you didn't to paste into your reply. A tab lists the comment threads waiting on you.
 - **What's new since last time.** docex remembers each version you've seen and highlights what's different, even when the others didn't track their changes.
-- **Write as well as review.** Markdown shortcuts while typing, equations, find and replace, spell checking, and an optional AI assistant that suggests rewrites as tracked changes.
+- **Write as well as review.** Markdown shortcuts while typing, equations, find and replace, spell checking.
+- **An AI assistant that edits the document, not just the words.** It works on the same Markdown view as the CLI, so it can add real links, bold or highlight, turn paragraphs into headings or lists, edit tables and leave comments, on the selection or across the whole document. Everything comes back as tracked changes in your name, and one Undo takes it back.
 
 <table>
 <tr>

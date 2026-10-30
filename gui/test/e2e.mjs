@@ -2,6 +2,7 @@
 // real backend, checking the document docex saves.
 //   npm run e2e
 import { execFileSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { start, scratch, cat, root } from "./browser.mjs";
 
@@ -213,6 +214,45 @@ try {
     const md = cat(f);
     check(md.includes("{--Partner--}{++client++} A supplied") && md.includes("three {--partner--}{++client++}"), md);
     check(md.includes("{--held-out--}{++hold-out++}"), md);
+  });
+
+  await scenario("AI edits the Markdown: a real link and bold, only in the selection, undoable", async () => {
+    const f = scratch(dir, "rich.docx");
+    await page.open(f);
+    writeFileSync(
+      join(dir, "ai.txt"),
+      `<edit>
+<find>- Bullet one</find>
+<replace>- Bullet one, see the [docs](https://docs.example.com)</replace>
+</edit>
+<edit>
+<find>Bullet two</find>
+<replace>**Bullet** two</replace>
+</edit>
+<edit>
+<find>## Goals</find>
+<replace>## Aims</replace>
+</edit>`,
+    );
+    await page.click(".ProseMirror p", "Bullet one");
+    await page.key("j", "Control");
+    await page.type("tighten");
+    await page.key("Enter");
+    await page.waitFor(`[...document.querySelectorAll("#toasts .toast")].some((t) => t.textContent.includes("suggestion"))`);
+    await page.settle();
+    check(await page.eval(`[...document.querySelectorAll(".ProseMirror a")].some((a) => a.textContent === "docs" && (a.closest("ins") || a.querySelector("ins")))`), "the link should be a real, tracked link");
+    check(await editorHas("strong", "Bullet"), "Bullet should be bold");
+    check(await page.eval(`document.querySelector(".ProseMirror").textContent.includes("Goals")`), "edits outside the selection must be left out");
+    check((await toast()).includes("1 of 3 edits didn't match"), `toast: ${await toast()}`);
+    await page.key("s", "Control");
+    await page.settle();
+    const md = cat(f);
+    check(md.includes("[{++docs++}](https://docs.example.com)") || md.includes("{++see the [docs](https://docs.example.com)++}") || /\{\+\+[^+]*\[docs\]\(https:\/\/docs\.example\.com\)/.test(md), md);
+    check(md.includes("## Goals"), md);
+    // Undo takes the whole AI edit back.
+    await page.key("z", "Control");
+    await page.settle();
+    check(!(await page.eval(`!!document.querySelector(".ProseMirror a[href='https://docs.example.com']")`)), "undo should remove the AI's edit");
   });
 
   await scenario("unsaved edits survive a crash", async () => {

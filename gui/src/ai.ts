@@ -1,20 +1,25 @@
-// AI assistance. Rewrites come back as tracked changes in your name (only the
-// words that changed), replies as editable drafts; nothing is applied silently.
+// AI assistance. Edits come back as tracked changes in your name, replies as
+// editable drafts; nothing is applied silently.
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { Mark, Node as PMNode } from "prosemirror-model";
-import type { EditorState, Transaction } from "prosemirror-state";
+import type { Node as PMNode } from "prosemirror-model";
+import { TextSelection, type EditorState } from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
 import type { Index, Item } from "./analyze";
-import { diffWords } from "./diff";
+import { docToModel } from "./convert";
 import { schema } from "./schema";
+import type { DocModel } from "./types";
 
 export interface AIHost {
   view: EditorView;
   author(): string;
   toast(msg: string, kind?: "info" | "error"): void;
   index(): Index;
+  /** The document as docex Markdown, with the editor's content; `marked` locates the selection. */
+  source(marked?: DocModel): Promise<Source>;
+  /** Apply edited Markdown as tracked changes; `note` is added to the report. */
+  applyMarkdown(md: string, label: string, note: string): Promise<void>;
 }
 
 interface SettingsView {
@@ -130,91 +135,134 @@ export async function aiSettingsDialog(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Rewriting a selection as tracked changes
+// Editing the document as docex Markdown
+//
+// The AI sees what `docex cat` shows (formatting, links, headings, lists,
+// tables, footnotes, other people's changes and comments) and answers with
+// find/replace edits on it. The core applies the result like any edited
+// Markdown, as tracked changes in your name: new links are real links, a
+// paragraph that becomes a heading changes style, bolding is a format change.
 
-interface Ch {
-  ch: string;
-  pos: number;
-  marks: readonly Mark[];
+/** The document's Markdown from the backend, and the part holding the selection. */
+export interface Source {
+  md: string;
+  region: [number, number] | null;
 }
 
-/** Selected paragraphs as editable characters, or an error message. */
-export function selectionParas(state: EditorState): { paras: Ch[][] } | string {
-  const { from, to, empty, $from } = state.selection;
-  let a = from;
-  let b = to;
-  if (empty) {
-    if ($from.parent.type !== schema.nodes.para) return "Put the cursor in a paragraph or select some text.";
-    a = $from.start();
-    b = $from.end();
-  }
-  const paras: Ch[][] = [];
-  let problem = "";
-  state.doc.nodesBetween(a, b, (node, pos) => {
-    if (node.type !== schema.nodes.para) return true;
-    const chars: Ch[] = [];
-    node.forEach((child, off) => {
-      const start = pos + 1 + off;
-      if (start + child.nodeSize <= a || start >= b) return;
-      if (schema.marks.del.isInSet(child.marks)) return;
-      if (!child.isText) {
-        problem = "The selection contains images, formulas or other objects; select plain text.";
-        return;
-      }
-      for (let k = 0; k < child.text!.length; k++) {
-        const p = start + k;
-        if (p >= a && p < b) chars.push({ ch: child.text![k], pos: p, marks: child.marks });
-      }
-    });
-    if (chars.some((c) => c.ch.trim())) paras.push(chars);
-    return false;
-  });
-  if (problem) return problem;
-  if (!paras.length) return "Nothing to rewrite.";
-  if (paras.reduce((n, p) => n + p.length, 0) > 20000) return "Selection too long; rewrite a section at a time.";
-  return { paras };
+export interface Edit {
+  find: string;
+  replace: string;
+  /** Every occurrence, not just one. */
+  all: boolean;
 }
 
-/** Turn the new text of each paragraph into minimal tracked changes. */
-export function rewriteTransaction(state: EditorState, paras: Ch[][], newTexts: string[], author: string): { tr: Transaction; edits: number } {
-  const { ins, del, comment } = schema.marks;
-  const insMark = ins.create({ author, date: "", wid: "" });
-  const delMark = del.create({ author, date: "", wid: "" });
-  const tr = state.tr.setMeta("docex-raw", true);
-  type Edit = { kind: "mark"; from: number; to: number } | { kind: "drop"; from: number; to: number } | { kind: "ins"; at: number; text: string; marks: readonly Mark[] };
+/** The selection marked with two private-use characters, for the backend to find it in the Markdown. */
+export function markedModel(state: EditorState): DocModel {
+  const { doc, selection } = state;
+  // Inside text, also for a selection of table cells or a whole node.
+  const a = TextSelection.near(doc.resolve(selection.from), 1).from;
+  const b = Math.max(a, TextSelection.near(doc.resolve(selection.to), -1).to);
+  return docToModel(state.tr.insertText("\uE001", b).insertText("\uE000", a).doc);
+}
+
+/** The edits in the AI's answer, and what it said besides (e.g. why nothing changed). */
+export function parseEdits(out: string): { edits: Edit[]; note: string } {
   const edits: Edit[] = [];
-  paras.forEach((chars, pi) => {
-    const old = chars.map((c) => c.ch).join("");
-    let k = 0;
-    for (const op of diffWords(old, newTexts[pi])) {
-      if (op.type === "eq") {
-        k += op.text.length;
-      } else if (op.type === "del") {
-        for (let j = k; j < k + op.text.length; j++) {
-          const c = chars[j];
-          const own = ins.isInSet(c.marks);
-          // Your own not-yet-saved insertion simply goes away.
-          const kind = own && (!own.attrs.wid || own.attrs.author === author) ? "drop" : "mark";
-          const last = edits[edits.length - 1];
-          if (last && last.kind === kind && "to" in last && last.to === c.pos) last.to = c.pos + 1;
-          else edits.push({ kind, from: c.pos, to: c.pos + 1 } as Edit);
-        }
-        k += op.text.length;
-      } else {
-        const at = k < chars.length ? chars[k].pos : chars[chars.length - 1].pos + 1;
-        const near = chars[Math.max(0, k - 1)] ?? chars[0];
-        const marks = near.marks.filter((m) => m.type !== ins && m.type !== del && m.type !== comment);
-        edits.push({ kind: "ins", at, text: op.text, marks });
-      }
-    }
-  });
-  for (const e of edits) if (e.kind === "mark") tr.addMark(e.from, e.to, delMark);
-  const moves = edits.filter((e) => e.kind !== "mark").sort((x, y) => ("at" in y ? y.at : y.from) - ("at" in x ? x.at : x.from));
-  for (const e of moves) {
-    if (e.kind === "drop") tr.delete(e.from, e.to);
-    else if (e.kind === "ins") tr.insert(e.at, schema.text(e.text, [...e.marks, insMark]));
+  // One newline right inside a tag belongs to the layout, not to the text.
+  const inner = (t: string) => t.replace(/^\r?\n/, "").replace(/\r?\n$/, "");
+  const re = /<edit(\s+all="?true"?)?\s*>\s*<find>([\s\S]*?)<\/find>\s*<replace>([\s\S]*?)<\/replace>\s*<\/edit>/g;
+  const note = out
+    .replace(re, (_, all, find, replace) => {
+      edits.push({ find: inner(find), replace: inner(replace), all: !!all });
+      return "";
+    })
+    .replace(/<\/?none>/g, "")
+    .trim();
+  return { edits, note };
+}
+
+/** Apply edits to `md`, only within `region` when given. Each edit must match
+ *  exactly once there (or anywhere, for `all`); the others are returned. */
+export function applyEdits(md: string, edits: Edit[], region: [number, number] | null): { md: string; applied: number; failed: Edit[] } {
+  const [lo, hi] = region ?? [0, md.length];
+  const hits: { at: number; len: number; text: string }[] = [];
+  const failed: Edit[] = [];
+  for (const e of edits) {
+    const found: number[] = [];
+    if (e.find) for (let k = md.indexOf(e.find, lo); k >= 0 && k + e.find.length <= hi; k = md.indexOf(e.find, k + e.find.length)) found.push(k);
+    if (!found.length || (found.length > 1 && !e.all)) failed.push(e);
+    else for (const at of found) hits.push({ at, len: e.find.length, text: e.replace });
   }
-  return { tr: tr.scrollIntoView(), edits: edits.length };
+  hits.sort((x, y) => x.at - y.at);
+  // Overlapping edits: the first one wins.
+  const keep = hits.filter((h, k) => !hits.slice(0, k).some((o) => o.at + o.len > h.at));
+  let out = md;
+  for (const h of [...keep].reverse()) out = out.slice(0, h.at) + h.text + out.slice(h.at + h.len);
+  return { md: out, applied: keep.length, failed };
+}
+
+export const EDIT_SYSTEM = `You edit a Word document for its author. The document is shown as Markdown; your edits are written back into the Word file as tracked changes in the author's name, which they review.
+
+How the Markdown maps to Word:
+- \`#\` … \`######\` headings, \`- \` bullets, \`1. \` numbered items (indent two spaces per level), \`> \` quotes, \`: \` captions.
+- **bold**, *italic*, ~~strikethrough~~, \`code\`, <u>underline</u>, <sup>raised</sup>, <sub>lowered</sub>, <mark>highlight</mark> (<mark data-color="green"> for other colours), <span style="color:#C00000">font colour</span>, [text](https://example.com) links.
+- $…$ inline formulas and $$…$$ on their own line (LaTeX); they become Word equations.
+- Footnotes: [^n] in the text, [^n]: text at the end. A new one: [^new] and [^new]: text.
+- Tables: pipe tables, or HTML <table> with one <td> per line and colspan/rowspan for merged cells; <br> separates paragraphs in a cell.
+- {++text++} and {--text--} are tracked changes by other people, {==text==}{>>Name: remark<<} are comments: keep them exactly as they are. To add a comment for the author, write {==passage==}{>>remark<<}.
+- <!-- docex:… --> lines and ![](media/…) images stand for content that can't be edited here (table of contents, shapes, charts, headers and footers, text box and content control markers): never change or remove them.
+- Keep escapes such as \\* \\_ \\$ as they are. Fonts, sizes and spacing can't be set.
+
+Answer only with edits, each in this form:
+<edit>
+<find>exact text copied from the document</find>
+<replace>the new version of that text</replace>
+</edit>
+The find text must occur exactly once in the part you may edit: include enough of the surrounding text to make it unique, but no more than needed. Use <edit all="true"> to change every occurrence. Edits must not overlap. Change only what the instruction asks for and leave everything else exactly as it is, including line breaks and blank lines. Keep the document's language unless asked to translate. If nothing should change, answer <none>why</none>.`;
+
+/** The request for `aiEdit`: the document (or, when huge, the part around the selection), the selection, the instruction. */
+export function editPrompt(md: string, region: [number, number] | null, instruction: string, picked = ""): string {
+  if (!region) return `<document>\n${md}\n</document>\n\nInstruction: ${instruction}`;
+  const pad = md.length > 120000 ? 20000 : md.length;
+  const a = Math.max(0, region[0] - pad);
+  const b = Math.min(md.length, region[1] + pad);
+  const context = `${a > 0 ? "[…]\n\n" : ""}${md.slice(a, b)}${b < md.length ? "\n\n[…]" : ""}`;
+  const part = md.slice(region[0], region[1]);
+  const focus = picked && picked.length < part.length * 0.8 ? `Within it, the author selected: "${picked}"; focus on that.\n\n` : "";
+  return `<document>\n${context}\n</document>\n\n<selection>\n${part}\n</selection>\n\n${focus}Edit only inside the selection. Instruction: ${instruction}`;
+}
+
+/** Edit the selection (the cursor's paragraph when empty) or, with `whole`, the whole document. */
+export async function aiEdit(host: AIHost, instruction: string, label: string, whole = false) {
+  const view = host.view;
+  const docBefore = view.state.doc;
+  const { from, to, empty } = view.state.selection;
+  const picked = empty ? "" : docBefore.textBetween(from, to, " ");
+  let src: Source;
+  try {
+    src = await host.source(whole ? undefined : markedModel(view.state));
+  } catch (e) {
+    return host.toast(String(e), "error");
+  }
+  const region = whole ? null : src.region;
+  if (!whole && !region) return host.toast("Couldn't find the selection in the document; select some text and try again.", "error");
+  if (whole && src.md.length > 400000) return host.toast("The document is too long to edit as a whole; select a part.", "error");
+  const prompt = editPrompt(src.md, region, instruction, picked);
+  const st = statusBox(`AI · ${label}…`);
+  try {
+    const out = await runAI(EDIT_SYSTEM, prompt, st.text, 32000);
+    const { edits, note } = parseEdits(out);
+    if (!edits.length) return host.toast(note ? `${label}: ${note.slice(0, 300)}` : `${label}: no changes suggested.`);
+    if (view.state.doc !== docBefore) return host.toast("The document changed while the AI was working; nothing applied.", "error");
+    const r = applyEdits(src.md, edits, region);
+    if (!r.applied) return host.toast(`${label}: the AI's edits didn't match the document; nothing changed. Try again.`, "error");
+    const skipped = r.failed.length ? ` ${r.failed.length} of ${edits.length} edits didn't match and were left out.` : "";
+    await host.applyMarkdown(r.md, label, skipped);
+  } catch (e) {
+    host.toast(String(e), "error");
+  } finally {
+    st.close();
+  }
 }
 
 export const REWRITES: [string, string][] = [
@@ -234,35 +282,6 @@ function statusBox(title: string) {
     text: (t: string) => ((box.lastChild as HTMLElement).textContent = t.slice(-600)),
     close: () => box.remove(),
   };
-}
-
-export async function rewriteSelection(host: AIHost, instruction: string, label = instruction) {
-  const view = host.view;
-  const sel = selectionParas(view.state);
-  if (typeof sel === "string") return host.toast(sel);
-  const docBefore = view.state.doc;
-  const texts = sel.paras.map((p) => p.map((c) => c.ch).join(""));
-  const st = statusBox(`AI · ${label}…`);
-  try {
-    const out = await runAI(
-      "You edit passages of a document for its author. Apply the instruction to the passage and return only the rewritten passage: no preamble, no quotes, no comments, no Markdown formatting. Keep exactly the same number of paragraphs, separated by one blank line. Keep the passage's language unless the instruction asks for a translation. Keep names, numbers and facts.",
-      `Instruction: ${instruction}\n\nPassage:\n${texts.join("\n\n")}`,
-      st.text,
-    );
-    let parts = out.trim().split(/\n\s*\n/).map((p) => p.replace(/\s*\n\s*/g, " ").trim());
-    if (parts.length !== texts.length) {
-      if (texts.length === 1) parts = [parts.join(" ")];
-      else return host.toast(`The AI returned ${parts.length} paragraphs for ${texts.length}; nothing changed. Try one paragraph at a time.`, "error");
-    }
-    if (view.state.doc !== docBefore) return host.toast("The document changed while the AI was working; nothing applied.", "error");
-    const { tr, edits: n } = rewriteTransaction(view.state, sel.paras, parts, host.author());
-    view.dispatch(tr);
-    host.toast(n ? `${label}: suggestions added as tracked changes in your name.` : `${label}: no changes suggested.`);
-  } catch (e) {
-    host.toast(String(e), "error");
-  } finally {
-    st.close();
-  }
 }
 
 // ---------------------------------------------------------------------------

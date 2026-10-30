@@ -126,6 +126,16 @@ fn recovery_clear(path: String) {
 }
 
 #[tauri::command]
+fn ai_source(state: State<AppState>, model: DocModel, tracked: bool, marked: Option<DocModel>) -> Result<backend::Source, String> {
+    backend::ai_source(&state, model, tracked, marked)
+}
+
+#[tauri::command]
+fn ai_apply(state: State<AppState>, model: DocModel, tracked: bool, md: String) -> Result<View, String> {
+    backend::ai_apply(&state, model, tracked, md)
+}
+
+#[tauri::command]
 fn md_to_model(md: String) -> DocModel {
     backend::md_to_model(md)
 }
@@ -246,6 +256,8 @@ fn main() {
             image_data,
             theme,
             md_to_model,
+            ai_source,
+            ai_apply,
             recovery_put,
             recovery_check,
             recovery_open,

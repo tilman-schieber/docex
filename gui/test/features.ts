@@ -1,8 +1,8 @@
-// Headless checks for diff, noise/clusters, "since", and AI rewrite application.
+// Headless checks for diff, noise/clusters, "since", and applying AI edits.
 import { EditorState, TextSelection } from "prosemirror-state";
-import { rewriteTransaction, selectionParas } from "../src/ai";
+import { applyEdits, markedModel, parseEdits } from "../src/ai";
 import { analyze } from "../src/analyze";
-import { docToModel, modelToDoc } from "../src/convert";
+import { modelToDoc } from "../src/convert";
 import { diffWords } from "../src/diff";
 import { computeSince } from "../src/since";
 import type { DocModel, View } from "../src/types";
@@ -42,14 +42,33 @@ const docNow = modelToDoc({ blocks: [para([{ t: "Same paragraph stays." }]), par
 const s = computeSince(docNow, { path: "x", name: "x", taken: "", paras: ["Same paragraph stays.", "The tenant pays 500 euros.", "A paragraph that was removed."] });
 check("since counts", s.changed === 1 && s.added === 1 && s.removed === 1, JSON.stringify({ c: s.changed, a: s.added, r: s.removed }));
 
-// AI rewrite -> minimal tracked changes
-let st = EditorState.create({ doc: modelToDoc({ blocks: [para([{ t: "The tenant pays 500 euros per month." }])] as DocModel["blocks"], boxes: [], notes: [] }) });
-st = st.apply(st.tr.setSelection(TextSelection.create(st.doc, 1, 1 + "The tenant pays 500 euros per month.".length)));
-const sel = selectionParas(st);
-if (typeof sel === "string") check("selection", false, sel);
-else {
-  const { tr, edits } = rewriteTransaction(st, sel.paras, ["The tenant pays 600 euros monthly."], "Me");
-  const spans = (docToModel(tr.doc).blocks[0] as { spans: { t?: string; st?: string }[] }).spans.map((x) => (x.st ? `${x.st}:${x.t}` : x.t)).join("|");
-  check("rewrite is minimal and tracked", spans === "The tenant pays |del:500|ins:600| euros |del:per month|ins:monthly|.", `${spans} (${edits} edits)`);
-}
+// AI edits: parsed from the answer, placed in the Markdown within the selection
+const answer = `Here you go.
+<edit>
+<find>see the website</find>
+<replace>see the [website](https://example.com)</replace>
+</edit>
+<edit all="true">
+<find>ACME</find>
+<replace>**ACME**</replace>
+</edit>
+<edit>
+<find>not there</find>
+<replace>x</replace>
+</edit>`;
+const { edits, note } = parseEdits(answer);
+check("edits parsed", edits.length === 3 && edits[1].all && edits[0].replace === "see the [website](https://example.com)" && note === "Here you go.", JSON.stringify({ edits, note }));
+const md = "# ACME\n\nFor details see the website of ACME.\n\nACME again, see the website.";
+const region: [number, number] = [md.indexOf("For"), md.indexOf("ACME.") + 5];
+const r = applyEdits(md, edits, region);
+check("edits stay in the selection", r.md === "# ACME\n\nFor details see the [website](https://example.com) of **ACME**.\n\nACME again, see the website." && r.applied === 2 && r.failed.length === 1, JSON.stringify(r));
+const twice = applyEdits(md, [{ find: "see the website", replace: "x", all: false }], null);
+check("ambiguous edit refused", twice.applied === 0 && twice.failed.length === 1);
+check("<none> gives the reason", parseEdits("<none>Already fine.</none>").note === "Already fine.");
+
+// The selection is marked for the backend
+let st = EditorState.create({ doc: modelToDoc({ blocks: [para([{ t: "One." }]), para([{ t: "Two words." }])] as DocModel["blocks"], boxes: [], notes: [] }) });
+st = st.apply(st.tr.setSelection(TextSelection.create(st.doc, 7, 10)));
+const marked = JSON.stringify(markedModel(st).blocks.map((b) => (b as { spans: { t?: string }[] }).spans.map((x) => x.t).join("")));
+check("selection marked", marked === JSON.stringify(["One.", "\uE000Two\uE001 words."]), marked);
 process.exit(failed ? 1 : 0);

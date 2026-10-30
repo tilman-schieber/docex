@@ -3,7 +3,7 @@
 
 import type { Item, ItemKind } from "./analyze";
 
-export type Action = "accepted" | "rejected" | "resolved" | "reopened" | "deleted" | "replied";
+export type Action = "accepted" | "rejected" | "resolved" | "reopened" | "deleted" | "replied" | "edited";
 
 export interface Decided {
   action: Action;
@@ -59,6 +59,11 @@ export function record(action: Action, items: Item[], section: (it: Item) => str
 export function recordMany(parts: [Action, Item[]][], section: (it: Item) => string) {
   const g = ++group;
   for (const [action, items] of parts) push(action, items, section, g);
+}
+
+/** An edit that Undo takes back like a decision (the AI's): keeps undo in step. */
+export function recordEdit() {
+  entries.push({ action: "edited", author: "", kind: "insert", section: "", group: ++group, undoable: true });
 }
 
 /** The last undoable call was undone. */

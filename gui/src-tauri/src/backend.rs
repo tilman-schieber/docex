@@ -404,6 +404,75 @@ pub fn recovery_clear(path: String) {
     recovery::clear(&path);
 }
 
+/// Marks the selection in the model sent with `ai_source`.
+const SEL_START: char = '\u{E000}';
+const SEL_END: char = '\u{E001}';
+
+/// The document as docex Markdown, with the editor's content applied: what
+/// the AI edits. `region` is the part to edit, in UTF-16 units (JavaScript
+/// string indices): the paragraphs (or table, or list) holding the selection.
+#[derive(Serialize)]
+pub struct Source {
+    md: String,
+    region: Option<(usize, usize)>,
+}
+
+/// Where the selection is in `md`: apply the model with the selection marked
+/// to a copy, find the marks in its Markdown, widen to whole blocks.
+fn selection_region(doc: &mut Docx, md: &str, marked: &DocModel, author: String) -> Option<(usize, usize)> {
+    let mut copy = Docx::from_bytes(doc.to_bytes().ok()?).ok()?;
+    let opts = ApplyOpts { author, date: now_iso(), tracked: false, base_dir: None, keep_opaque: true };
+    copy.apply_model(marked, &opts).ok()?;
+    let with = copy.render(docex_core::render::View::Review);
+    let (s, e) = (with.find(SEL_START)?, with.find(SEL_END)?);
+    // Only if the marks are all that differs.
+    if with.chars().filter(|c| *c != SEL_START && *c != SEL_END).collect::<String>() != md {
+        return None;
+    }
+    let len = SEL_START.len_utf8();
+    let (s, e) = if s < e { (s, e - len) } else { (s - len, e) };
+    let (s, e) = (s.min(e), s.max(e));
+    let a = md[..s].rfind("\n\n").map_or(0, |k| k + 2);
+    let b = md[e..].find("\n\n").map_or(md.len(), |k| e + k);
+    Some((a, b))
+}
+
+fn utf16_at(s: &str, byte: usize) -> usize {
+    s[..byte].encode_utf16().count()
+}
+
+pub fn ai_source(state: &AppState, model: DocModel, tracked: bool, marked: Option<DocModel>) -> Result<Source, String> {
+    let author = author_of(state);
+    let mut out = None;
+    with_session(state, Some(&model), tracked, |s, _| {
+        let md = s.doc.render(docex_core::render::View::Review);
+        let region = marked.and_then(|m| selection_region(&mut s.doc, &md, &m, author)).map(|(a, b)| (utf16_at(&md, a), utf16_at(&md, b)));
+        out = Some(Source { md, region });
+        Ok(())
+    })?;
+    out.ok_or_else(|| "no document open".into())
+}
+
+/// Apply Markdown the AI edited, always as tracked changes in your name.
+/// Placeholders it dropped are kept. Undoable like a review decision.
+pub fn ai_apply(state: &AppState, model: DocModel, tracked: bool, md: String) -> Result<View, String> {
+    let author = author_of(state);
+    with_session(state, Some(&model), tracked, |s, warnings| {
+        let snap = s.doc.to_bytes().map_err(err)?;
+        let opts = ApplyOpts { author, date: now_iso(), tracked: true, base_dir: None, keep_opaque: true };
+        let r = s.doc.apply(&md, &opts).map_err(err)?;
+        warnings.extend(r.warnings.iter().cloned());
+        if r.changed() {
+            s.dirty = true;
+            s.undo.push(snap);
+            if s.undo.len() > UNDO_DEPTH {
+                s.undo.remove(0);
+            }
+        }
+        Ok(())
+    })
+}
+
 pub fn md_to_model(md: String) -> DocModel {
     docex_core::docmodel::from_markdown(&md)
 }

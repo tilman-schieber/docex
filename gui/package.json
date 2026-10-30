@@ -9,7 +9,8 @@
     "tauri": "tauri",
     "test": "vite build --ssr test/roundtrip.ts --outDir test-dist/roundtrip && vite build --ssr test/track.ts --outDir test-dist/track && vite build --ssr test/markdown.ts --outDir test-dist/markdown && vite build --ssr test/features.ts --outDir test-dist/features && vite build --ssr test/tables.ts --outDir test-dist/tables && node test-dist/markdown/markdown.js && node test-dist/features/features.js && node test/run.mjs",
     "e2e": "node test/e2e.mjs",
-    "screenshots": "node test/screenshots.mjs"
+    "screenshots": "node test/screenshots.mjs",
+    "ai-live": "vite build --ssr test/ai-live.ts --outDir test-dist/ai-live && node test-dist/ai-live/ai-live.js"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",

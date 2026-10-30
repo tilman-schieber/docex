@@ -60,7 +60,7 @@ import {
 import { initTheme } from "./theme";
 import { highlightPlugin, setHighlight } from "./highlight";
 import { markdownBackspace, markdownRules, pasteMarkdown } from "./markdown";
-import { aiSettingsDialog, askDocument, draftReply, REWRITES, rewriteSelection, summarizeReview, type AIHost } from "./ai";
+import { aiEdit, aiSettingsDialog, askDocument, draftReply, REWRITES, summarizeReview, type AIHost, type Source } from "./ai";
 import { openPalette, type Entry } from "./palette";
 import { computeSince, paraTexts, setSince, sincePlugin, type SinceResult, type Snapshot } from "./since";
 import { openTriage } from "./triage";
@@ -415,7 +415,24 @@ function sinceChip(): HTMLElement | null {
   return b;
 }
 
-const aiHost: AIHost = { view, author: () => author, toast, index: () => cockpit.index() };
+const aiHost: AIHost = {
+  view,
+  author: () => author,
+  toast,
+  index: () => cockpit.index(),
+  source: (marked) => invoke<Source>("ai_source", { model: model(), tracked: tracking, marked: marked ?? null }),
+  async applyMarkdown(md, label, note) {
+    const before = (current?.changes.length ?? 0) + (current?.comments.length ?? 0);
+    const v = await call("ai_apply", { md });
+    if (!v) return;
+    view.focus();
+    const n = v.changes.length + v.comments.length - before;
+    if (n > 0 && v.can_undo) {
+      reviewLog.recordEdit();
+      toast(`${label}: ${n} suggestion${n === 1 ? "" : "s"}, tracked in your name.${note}`, "info", { label: "Undo", run: undoReview });
+    } else toast(`${label}: nothing changed.${note}`);
+  },
+};
 
 const sectionOf = (it: Item) => cockpit.index().sections[it.section]?.title ?? "";
 
@@ -1007,13 +1024,23 @@ function aiEntries(): Entry[] {
   const hasSel = !view.state.selection.empty;
   const target = hasSel ? "selection" : "paragraph";
   return [
-    ...REWRITES.map(([label, instr]) => ({ label: `${label} (${target})`, group: "AI", hint: "tracked", run: () => rewriteSelection(aiHost, instr, label) })),
+    ...REWRITES.map(([label, instr]) => ({ label: `${label} (${target})`, group: "AI", hint: "tracked", run: () => aiEdit(aiHost, instr, label) })),
     {
-      label: `Rewrite ${target} with your own instruction…`,
+      label: `Edit ${target} with your own instruction…`,
       group: "AI",
+      hint: "links, formatting, lists…",
       run: async () => {
-        const instr = await askText(`How should the ${target} change?`);
-        if (instr?.trim()) await rewriteSelection(aiHost, instr.trim(), instr.trim());
+        const instr = await askText(`How should the ${target} change? (text, links, formatting, headings, lists, tables, comments)`);
+        if (instr?.trim()) await aiEdit(aiHost, instr.trim(), instr.trim());
+      },
+    },
+    {
+      label: "Edit the whole document…",
+      group: "AI",
+      hint: "tracked",
+      run: async () => {
+        const instr = await askText("How should the document change? (e.g. link every mention of our website, make the headings sentence case)");
+        if (instr?.trim()) await aiEdit(aiHost, instr.trim(), instr.trim(), true);
       },
     },
     {
@@ -1031,7 +1058,7 @@ function aiEntries(): Entry[] {
 }
 
 function openAIMenu() {
-  openPalette(aiEntries(), "AI: rewrite, ask, summarize…  (rewrites become tracked changes)");
+  openPalette(aiEntries(), "AI: edit, ask, summarize…  (edits become tracked changes)");
 }
 
 /** Character formatting for the palette: raised/lowered text, highlighter colours, font colours. */

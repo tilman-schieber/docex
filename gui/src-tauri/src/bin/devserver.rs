@@ -64,6 +64,13 @@ fn dispatch(st: &AppState, cmd: &str, a: &Value) -> Result<Value, String> {
         "spellcheck" => Ok(arg::<Value>(a, "langs")?),
         "get_author" => to(backend::get_author(st)),
         "set_author" => to(backend::set_author(st, arg(a, "name")?)),
+        "ai_source" => to(backend::ai_source(st, arg(a, "model")?, arg(a, "tracked")?, arg(a, "marked")?)?),
+        "ai_apply" => to(backend::ai_apply(st, arg(a, "model")?, arg(a, "tracked")?, arg(a, "md")?)?),
+        // Tests script the AI's answer: the file named by DOCEX_FAKE_AI.
+        "ai_complete" => match std::env::var("DOCEX_FAKE_AI") {
+            Ok(p) => std::fs::read_to_string(p).map(Value::String).map_err(|e| e.to_string()),
+            Err(_) => Err("no AI in the dev server".into()),
+        },
         // No AI in tests: nothing is configured.
         "ai_settings" => Ok(json!({ "provider": "anthropic", "anthropic_model": "", "effort": "", "openai_base_url": "", "openai_model": "", "anthropic_key_set": false, "anthropic_key_from_env": false, "openai_key_set": false })),
         _ => Err(format!("{cmd}: not available in the dev server")),
