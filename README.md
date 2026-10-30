@@ -2,6 +2,7 @@
 
 [![release](https://github.com/tilman-schieber/docex/actions/workflows/release.yml/badge.svg)](https://github.com/tilman-schieber/docex/actions/workflows/release.yml)
 [![latest release](https://img.shields.io/github/v/release/tilman-schieber/docex)](https://github.com/tilman-schieber/docex/releases/latest)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 Word documents are where a lot of real work happens: contracts, reports, proposals, anything that goes back and forth between people with tracked changes and comments. docex lets you work on that content in plain text, from the terminal, an editor of your choice, a desktop app or an AI agent, without anyone on the other side noticing that you never opened Word.
 
@@ -101,3 +102,7 @@ npm run screenshots                     # regenerate docs/screenshots/
 ```
 
 A plain `cargo build` doesn't build the app: Tauri has to bundle the web front end into it (`npx tauri build`). A development build of the app (`cargo build -p docex-gui`) only works under `npx tauri dev`, and says so. Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
