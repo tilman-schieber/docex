@@ -70,6 +70,7 @@ import { atomIndex, docToModel, modelToDoc, type PendingComment } from "./conver
 import { imageUrls, KINDS, renderMath, schema } from "./schema";
 import { trackTransaction } from "./track";
 import { setGraphics } from "./chart";
+import { createFindBar, findPlugin } from "./find";
 import * as reviewLog from "./review-log";
 import type { Change, Comment, HeaderFooter, View } from "./types";
 
@@ -323,6 +324,7 @@ function plugins() {
     gapCursor(),
     tableEditing(),
     highlightPlugin,
+    findPlugin,
     sincePlugin,
   ];
 }
@@ -507,6 +509,8 @@ cockpit.onSectionChange((t) => {
   renderStatus();
 });
 
+const findBar = createFindBar(view, { tracking: () => tracking, author: () => author, toast });
+
 // Headers and footers: faint, read-only strips above and below the text.
 const pageHeader = h("div", { class: "furniture top" });
 const pageFooter = h("div", { class: "furniture bottom" });
@@ -554,6 +558,7 @@ function load(v: View, keepSelection = true) {
     }
   }
   view.updateState(state);
+  findBar.refresh();
   renderFurniture(v.model.furniture ?? []);
   localDirty = false;
   if (!v.can_undo) dropActionToasts();
@@ -1084,6 +1089,8 @@ function paletteEntries(): Entry[] {
     { label: "New document", group: "Command", hint: "Ctrl+N", run: newFile },
     { label: "Toggle outline", group: "View", hint: "Ctrl+1", run: () => togglePanel("outline") },
     { label: "Toggle review panel", group: "View", hint: "Ctrl+2", run: () => togglePanel("sidebar") },
+    { label: "Find…", group: "Command", hint: "Ctrl+F", run: () => findBar.open(false) },
+    { label: "Find and replace…", group: "Command", hint: "Ctrl+H", run: () => findBar.open(true) },
     { label: "Insert table", group: "Insert", run: insertTable },
     ...TABLE_CMDS.map(([, tip, cmd]) => ({ label: `Table: ${tip.replace(/\s+\(.*\)$/, "").toLowerCase()}`, group: "Table", run: () => { cmd(view.state, view.dispatch); view.focus(); } })),
     { label: "Insert image…", group: "Insert", run: insertImage },
@@ -1145,6 +1152,9 @@ document.addEventListener("keydown", (e) => {
   } else if (k === "p") {
     e.preventDefault();
     openPalette(paletteEntries());
+  } else if (k === "f" || k === "h") {
+    e.preventDefault();
+    findBar.open(k === "h");
   } else if (k === "j") {
     e.preventDefault();
     openAIMenu();

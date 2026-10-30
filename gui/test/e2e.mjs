@@ -172,6 +172,49 @@ try {
     check(!(await page.eval(`[...document.querySelectorAll("#sidebar .pill")].some((p) => p.textContent.includes("For me"))`)), "answered thread still waiting on me");
   });
 
+  await scenario("find and replace, tracked", async () => {
+    const f = scratch(dir, "review.docx");
+    await page.open(f);
+    const count = () => page.eval(`document.querySelector(".fb-count").textContent`);
+    await page.click(".ProseMirror p", "Partner A");
+    await page.key("f", "Control");
+    await page.waitFor(`!document.querySelector(".findbar").hidden`);
+    await page.type("KI");
+    check((await count()) === "no matches", `deleted text matched: ${await count()}`);
+    await page.eval(`(() => { const i = document.querySelector(".fb-find"); i.value = ""; i.dispatchEvent(new Event("input")); })()`);
+    await page.type("partner");
+    check((await count()).endsWith("of 4"), `partner: ${await count()}`);
+    const first = await count();
+    await page.key("Enter");
+    check((await count()) !== first, "Enter should go to the next match");
+    // Replace all: four tracked replacements, one undo step.
+    await page.key("h", "Control");
+    await page.waitFor(`document.querySelector(".findbar").classList.contains("replacing")`);
+    await page.type("client");
+    await page.key("Enter", "Control");
+    const n = () => page.eval(`[...document.querySelectorAll(".ProseMirror ins.chg")].filter((e) => e.textContent === "client").length`);
+    check((await n()) === 4, `tracked insertions: ${await n()}`);
+    check((await count()) === "no matches", `after replace all: ${await count()}`);
+    await page.key("Escape");
+    await page.key("z", "Control");
+    check((await n()) === 0, "Ctrl+Z should take back all four");
+    await page.key("y", "Control");
+    check((await n()) === 4, "Ctrl+Y should redo them");
+    // One at a time.
+    await page.key("h", "Control");
+    await page.eval(`(() => { const i = document.querySelector(".fb-find"); i.value = "held-out"; i.dispatchEvent(new Event("input")); })()`);
+    await page.click(".fb-replace");
+    await page.eval(`(() => { const i = document.querySelector(".fb-replace"); i.value = ""; })()`);
+    await page.type("hold-out");
+    await page.key("Enter");
+    await page.key("Escape");
+    await page.key("s", "Control");
+    await page.settle();
+    const md = cat(f);
+    check(md.includes("{--Partner--}{++client++} A supplied") && md.includes("three {--partner--}{++client++}"), md);
+    check(md.includes("{--held-out--}{++hold-out++}"), md);
+  });
+
   await scenario("unsaved edits survive a crash", async () => {
     const f = scratch(dir, "charts.docx");
     await page.open(f);

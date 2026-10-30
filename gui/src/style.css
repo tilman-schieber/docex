@@ -593,6 +593,71 @@ main {
   color: var(--faint);
 }
 
+/* Find and replace */
+.findbar {
+  position: absolute;
+  top: 10px;
+  right: 24px;
+  z-index: 14;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+  font-size: 12px;
+}
+
+.findbar[hidden],
+.findbar:not(.replacing) .fb-replace-row {
+  display: none;
+}
+
+.fb-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.fb-row input {
+  width: 220px;
+  background: var(--page);
+  border: 1px solid var(--line);
+  padding: 4px 6px;
+  outline: none;
+}
+
+.fb-row input:focus {
+  border-color: var(--accent);
+}
+
+.fb-count {
+  min-width: 70px;
+  color: var(--faint);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.fb-row button {
+  padding: 2px 7px;
+  border: 1px solid transparent;
+}
+
+.fb-row button.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ProseMirror .find-hit {
+  background: color-mix(in srgb, var(--yellow) 30%, transparent);
+}
+
+.ProseMirror .find-hit.cur {
+  background: color-mix(in srgb, var(--orange) 55%, transparent);
+  outline: 1px solid var(--orange);
+}
+
 /* Review progress */
 .progress-row {
   display: flex;
