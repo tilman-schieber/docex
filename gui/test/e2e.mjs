@@ -330,6 +330,26 @@ try {
     await page.settle();
     check((await count()) === before, "Undo takes the comparison back");
   });
+
+  await scenario("triage with AI suggestions: preset, shown on the card, applied together", async () => {
+    const f = scratch(dir, "review.docx");
+    await page.open(f);
+    const count = () => page.eval(`document.querySelectorAll(".ProseMirror ins, .ProseMirror del").length`);
+    const before = await count();
+    writeFileSync(join(dir, "ai.txt"), '<advice id="1" do="accept">Fixes the spelling.</advice>\n<advice id="2" do="reject">Contradicts section 3.</advice>\n<advice id="3" do="check">New figure; verify the source.</advice>');
+    await page.key("p", "Control");
+    await page.type("triage with ai");
+    await page.key("Enter");
+    await page.waitFor(`document.querySelector(".triage .tr-ai")`);
+    const card = await page.eval(`document.querySelector(".triage .tr-ai").textContent`);
+    check(card.includes("AI: accept") && card.includes("Fixes the spelling."), `card: ${card}`);
+    check(await page.eval(`document.querySelector(".triage .tr-tally").textContent.startsWith("1 ✓  1 ✗")`), "accept and reject are preset");
+    await page.key("Enter"); // to the summary
+    await page.key("Enter"); // apply
+    await page.settle();
+    check(!(await page.eval(`!!document.querySelector(".triage")`)), "triage closes");
+    check((await count()) < before, `the two decided changes are gone (${before} → ${await count()})`);
+  });
 } finally {
   await close();
 }

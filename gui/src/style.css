@@ -2135,6 +2135,26 @@ main {
   border-color: var(--red);
 }
 
+.tr-ai {
+  font-size: 12.5px;
+  color: var(--dim);
+  padding: 4px 8px;
+  border-left: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.tr-ai.accept b {
+  color: var(--green);
+}
+
+.tr-ai.reject b {
+  color: var(--red);
+}
+
+.tr-ai.check b {
+  color: var(--yellow);
+}
+
 .tr-summary .row {
   justify-content: flex-end;
 }

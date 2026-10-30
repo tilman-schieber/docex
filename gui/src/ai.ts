@@ -387,6 +387,54 @@ export async function summarizeReview(host: AIHost, items: Item[], scope: string
   );
 }
 
+/** What the AI suggests for one change in triage. */
+export interface Advice {
+  do: "accept" | "reject" | "check";
+  why: string;
+}
+
+const ADVICE_MAX = 300;
+
+/** The request for `reviewAdvice`: system prompt, prompt and token budget. */
+export function advicePrompt(me: string, doc: string, changes: Item[], section: (i: Item) => string) {
+  const q = (t?: string) => `«${(t ?? "").replace(/\s+/g, " ")}»`;
+  const list = changes
+    .map((i, n) => {
+      const what = i.kind === "replace" ? `replaced ${q(i.old)} with ${q(i.new)}` : i.kind === "insert" ? `inserted ${q(i.new ?? i.text)}` : i.kind === "delete" ? `deleted ${q(i.old ?? i.text)}` : `${i.label ?? "formatting"} on ${q(i.text)}`;
+      return `#${n + 1} [${i.author}, §${section(i)}] ${what}\n   context: …${i.before ?? ""}[HERE]${i.after ?? ""}…`;
+    })
+    .join("\n");
+  const system = `You help ${me} review other people's tracked changes in their document. For every numbered change, suggest accept, reject or check:
+- accept: it fixes an error, improves clarity or is a harmless style choice consistent with the rest of the document.
+- reject: it introduces an error, contradicts the rest of the document (figures, names, terms, dates, cross-references), changes the meaning without reason, or conflicts with another change.
+- check: it depends on facts or intentions you can't verify from the document (new figures, claims, commitments), or reviewers disagree.
+Look at the document as a whole: a number changed in one place but not in another, a term renamed inconsistently, two people editing the same passage.
+Answer only with one line per change, in order, the reason at most 15 words in the language of the document. The reader doesn't see the numbers: to point at another change, quote its words.
+<advice id="1" do="accept">reason</advice>`;
+  const prompt = `<document>\n${doc.slice(0, 120000)}\n</document>\n\n<changes>\n${list}\n</changes>`;
+  return { system, prompt, maxTokens: Math.min(32000, 400 + changes.length * 60) };
+}
+
+/** Advice per item key for the changes in `items` (comments are left to the
+ *  person). `onProgress` gets the number of changes judged so far. */
+export async function reviewAdvice(host: AIHost, items: Item[], onProgress?: (n: number) => void): Promise<Map<string, Advice>> {
+  const index = host.index();
+  const changes = items.filter((i) => i.kind !== "comment").slice(0, ADVICE_MAX);
+  const sec = (i: Item) => (i.section >= 0 ? index.sections[i.section].title : "-");
+  const r = advicePrompt(host.author(), docMarkdown(host.view.state.doc), changes, sec);
+  const out = await runAI(r.system, r.prompt, onProgress && ((t) => onProgress((t.match(/<\/advice>/g) ?? []).length)), r.maxTokens);
+  return parseAdvice(out, changes);
+}
+
+export function parseAdvice(out: string, changes: Item[]): Map<string, Advice> {
+  const m = new Map<string, Advice>();
+  for (const [, id, d, why] of out.matchAll(/<advice\s+id="(\d+)"\s+do="(accept|reject|check)"\s*>([\s\S]*?)<\/advice>/g)) {
+    const it = changes[Number(id) - 1];
+    if (it) m.set(it.key, { do: d as Advice["do"], why: why.trim() });
+  }
+  return m;
+}
+
 /** Draft a reply to a comment thread, streamed into `onText`. */
 export async function draftReply(host: AIHost, it: Item, onText: (t: string) => void): Promise<string> {
   const c = it.comment!;

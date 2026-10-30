@@ -1,6 +1,6 @@
 // Headless checks for diff, noise/clusters, "since", and applying AI edits.
 import { EditorState, TextSelection } from "prosemirror-state";
-import { applyEdits, markedModel, parseEdits } from "../src/ai";
+import { applyEdits, markedModel, parseAdvice, parseEdits } from "../src/ai";
 import { analyze } from "../src/analyze";
 import { modelToDoc } from "../src/convert";
 import { diffWords } from "../src/diff";
@@ -72,6 +72,10 @@ let st = EditorState.create({ doc: modelToDoc({ blocks: [para([{ t: "One." }]), 
 st = st.apply(st.tr.setSelection(TextSelection.create(st.doc, 7, 10)));
 const marked = JSON.stringify(markedModel(st).blocks.map((b) => (b as { spans: { t?: string }[] }).spans.map((x) => x.t).join("")));
 check("selection marked", marked === JSON.stringify(["One.", "\uE000Two\uE001 words."]), marked);
+
+// AI advice for triage: by number, unknown numbers and malformed lines ignored
+const advice = parseAdvice('<advice id="2" do="reject">Contradicts the table.</advice>\n<advice id="1" do="accept">Typo fix.</advice>\n<advice id="9" do="accept">x</advice>\n<advice id="3" do="maybe">?</advice>', idx.items.slice(0, 3));
+check("advice parsed", advice.size === 2 && advice.get(idx.items[1].key)?.do === "reject" && advice.get(idx.items[0].key)?.why === "Typo fix.", JSON.stringify([...advice]));
 
 // Author colours: distinct, and handed out in order of appearance
 const tokyo = { accent: "#7aa2f7", background: "#1a1b26", red: "#f7768e", yellow: "#e0af68", orange: "#ff9e64", green: "#9ece6a", cyan: "#7dcfff", blue: "#7aa2f7", magenta: "#bb9af7" };

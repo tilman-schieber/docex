@@ -74,7 +74,7 @@ Its focus is the part of working with Word documents that takes the most time: *
 - **Compare with another version.** When someone sends the document back without tracking their changes, docex writes their version into yours as tracked changes in their name, next to the changes already open.
 - **What's new since last time.** docex remembers each version you've seen and highlights what's different, even when the others didn't track their changes.
 - **Write as well as review.** Markdown shortcuts while typing, equations, find and replace, spell checking.
-- **An AI assistant that edits the document, not just the words.** It works on the same Markdown view as the CLI, so it can add real links, bold or highlight, turn paragraphs into headings or lists, edit tables and leave comments, on the selection or across the whole document. Everything comes back as tracked changes in your name, and one Undo takes it back.
+- **An AI assistant that edits the document, not just the words.** It works on the same Markdown view as the CLI, so it can add real links, bold or highlight, turn paragraphs into headings or lists, edit tables and leave comments, on the selection or across the whole document. Everything comes back as tracked changes in your name, and one Undo takes it back. It can also go through other people's changes with you: triage starts with its suggestion for each one (accept, reject, or look closer) and a short reason.
 
 <table>
 <tr>

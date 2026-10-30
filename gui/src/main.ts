@@ -60,7 +60,7 @@ import {
 import { initTheme } from "./theme";
 import { highlightPlugin, setHighlight } from "./highlight";
 import { markdownBackspace, markdownRules, pasteMarkdown } from "./markdown";
-import { aiEdit, aiSettingsDialog, askDocument, draftReply, REWRITES, summarizeReview, type AIHost, type Source } from "./ai";
+import { aiEdit, aiSettingsDialog, askDocument, draftReply, REWRITES, reviewAdvice, summarizeReview, type Advice, type AIHost, type Source } from "./ai";
 import { openPalette, type Entry } from "./palette";
 import { computeSince, paraTexts, setSince, sincePlugin, type SinceResult, type Snapshot } from "./since";
 import { openTriage } from "./triage";
@@ -108,6 +108,13 @@ function toast(msg: string, kind: "info" | "error" = "info", action?: { label: s
   }
   $("#toasts").append(t);
   setTimeout(() => t.remove(), kind === "error" || action ? 8000 : 4000);
+}
+
+/** A notice that stays until `done()`, for work that takes a while. */
+function progressToast(msg: string) {
+  const t = h("div", { class: "toast info" }, msg);
+  $("#toasts").append(t);
+  return { set: (m: string) => (t.textContent = m), done: () => t.remove() };
 }
 
 /** Take back the last accept / reject / resolve / delete. */
@@ -506,7 +513,20 @@ const cockpit = createCockpit({
   call: (cmd, args) => call(cmd, args),
   toast,
   tracking: () => tracking,
-  triage: (items, scope) =>
+  triage: async (items, scope, ai) => {
+    let advice: Map<string, Advice> | undefined;
+    if (ai) {
+      const n = items.filter((i) => i.kind !== "comment").length;
+      const p = progressToast(`AI is going through ${n} change${n === 1 ? "" : "s"}…`);
+      try {
+        advice = await reviewAdvice(aiHost, items, (k) => p.set(`AI is going through ${n} changes… ${k} done`));
+      } catch (e) {
+        return toast(`AI: ${e}`, "error");
+      } finally {
+        p.done();
+      }
+      if (!advice.size) return toast("The AI gave no suggestions.", "error");
+    }
     openTriage(items, scope, {
       show: (it, inset) => cockpit.focus(it, true, { hold: true, inset }),
       apply: async (d, label) => {
@@ -536,7 +556,8 @@ const cockpit = createCockpit({
         view.focus();
         cockpit.refreshNow();
       },
-    }),
+    }, advice);
+  },
   summarize: (items, scope) => void summarizeReview(aiHost, items, scope),
   summary: () => showSummary(),
   draft: (it, onText) => draftReply(aiHost, it, onText),
@@ -1097,6 +1118,7 @@ function aiEntries(): Entry[] {
         if (q?.trim()) await askDocument(aiHost, q.trim());
       },
     },
+    { label: "Triage with AI suggestions (the changes shown)", group: "AI", keywords: "review accept reject advice", run: () => cockpit.startTriage(true) },
     { label: "Summarize the changes and comments shown", group: "AI", run: () => summarizeReview(aiHost, cockpit.shown(), "the review list") },
     { label: "Summarize all changes and comments", group: "AI", run: () => summarizeReview(aiHost, cockpit.index().items, "all changes and comments") },
     { label: "AI settings (provider, key, model)…", group: "AI", run: () => aiSettingsDialog() },

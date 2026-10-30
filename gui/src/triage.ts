@@ -2,6 +2,7 @@
 // Decisions are collected locally (instant, undoable) and applied together
 // in one call at the end.
 
+import type { Advice } from "./ai";
 import type { Item } from "./analyze";
 import { visible } from "./cockpit";
 import { authorColor, initials } from "./theme";
@@ -29,9 +30,14 @@ function h<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", ...kids: (No
 
 const KIND: Record<string, string> = { insert: "inserted", delete: "deleted", replace: "replaced", format: "formatting", other: "changed", comment: "comment" };
 
-export function openTriage(items: Item[], scope: string, host: TriageHost) {
+/** `advice`: the AI's suggestions; accept / reject start out decided that way. */
+export function openTriage(items: Item[], scope: string, host: TriageHost, advice?: Map<string, Advice>) {
   if (!items.length) return;
   const decisions = new Map<string, Decision>();
+  for (const it of items) {
+    const a = advice?.get(it.key);
+    if (a && a.do !== "check") decisions.set(it.key, a.do);
+  }
   const history: string[] = [];
   let i = 0;
   let summary = false;
@@ -120,7 +126,9 @@ export function openTriage(items: Item[], scope: string, host: TriageHost) {
       body.append(line);
     }
     const state = d ? h("div", `tr-state ${d}`, { accept: "✓ accepted", reject: "✗ rejected", skip: "skipped", resolve: "✓ resolved" }[d]) : null;
-    return h("div", "tr-card", head, meta, body, state);
+    const a = advice?.get(it.key);
+    const ai = a ? h("div", `tr-ai ${a.do}`, h("b", "", { accept: "AI: accept", reject: "AI: reject", check: "AI: look closer" }[a.do]), a.why ? ` · ${a.why}` : "") : null;
+    return h("div", "tr-card", head, meta, body, ai, state);
   }
 
   function render() {
@@ -132,7 +140,7 @@ export function openTriage(items: Item[], scope: string, host: TriageHost) {
     const top = h(
       "div",
       "tr-top",
-      h("span", "tr-title", `Triage · ${scope}`),
+      h("span", "tr-title", `Triage · ${scope}${advice ? " · AI suggestions" : ""}`),
       h("span", "tr-count", summary ? `${items.length} items` : `${i + 1} / ${items.length}`),
       h("span", "tr-tally", `${count("accept")} ✓  ${count("reject")} ✗  ${count("resolve")} ◉  ${count("skip")} skipped`),
       h("span", "grow"),
@@ -149,7 +157,7 @@ export function openTriage(items: Item[], scope: string, host: TriageHost) {
         "div",
         "tr-card tr-summary",
         h("div", "tr-text", `Apply ${count("accept")} accepted and ${count("reject")} rejected changes${count("resolve") ? ` and resolve ${count("resolve")} comment threads` : ""}?`),
-        h("div", "tr-meta", `${items.length - decisions.size} undecided and ${count("skip")} skipped items stay as they are.`),
+        h("div", "tr-meta", `${items.length - decisions.size} undecided and ${count("skip")} skipped items stay as they are.${advice ? ` The AI's suggestions are preset; go back (←) to change any.` : ""}`),
       );
       const go = h("button", "primary", "Apply (Enter)");
       go.addEventListener("click", () => void apply());

@@ -34,7 +34,7 @@ export interface App {
   /** Whether Track Changes is on. */
   tracking(): boolean;
   /** Review the given items one by one. */
-  triage(items: Item[], scope: string): void;
+  triage(items: Item[], scope: string, ai?: boolean): void | Promise<void>;
   /** AI summary of the given items. */
   summarize(items: Item[], scope: string): void;
   /** AI-drafted reply to a comment thread. */
@@ -708,6 +708,7 @@ export function createCockpit(app: App) {
         ? h("button", { class: "ghost", "data-tip": "Go through these one by one with single keys  Alt+T", onclick: () => startTriage() }, icon(ListChecks), "Triage")
         : null,
       list.length ? h("button", { class: "ghost", "data-tip": "AI summary of what's shown", onclick: () => app.summarize(list, scopeLabel()) }, icon(Sparkles)) : null,
+      changeItems.length ? h("button", { class: "ghost", "data-tip": "Triage with the AI's suggestion for each change", onclick: () => void startTriage(true) }, icon(ListChecks), icon(Sparkles)) : null,
       changeItems.length
         ? h("button", { class: "ghost ok", "data-tip": "Accept every change listed below", onclick: () => resolve(changeItems, true) }, icon(Check), `Accept ${changeItems.length}`)
         : null,
@@ -933,7 +934,8 @@ export function createCockpit(app: App) {
     return parts.join(" · ") || "everything";
   }
 
-  async function startTriage() {
+  /** `ai`: with the AI's suggestion for each change. */
+  async function startTriage(ai = false) {
     // Your unsaved edits need Word ids before they can be decided on.
     if (index.totals.pending) {
       await app.call("sync");
@@ -942,7 +944,7 @@ export function createCockpit(app: App) {
     // Only items there is something to decide on: changes with Word ids, threads.
     const list = shown().filter((i) => !i.pending && (i.kind === "comment" || i.wids.length > 0));
     if (!list.length) return app.toast("Nothing to triage with the current filter.");
-    app.triage(list, scopeLabel());
+    app.triage(list, scopeLabel(), ai);
   }
 
   return {
