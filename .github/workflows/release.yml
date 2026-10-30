@@ -1,6 +1,6 @@
 # Builds the desktop app and the command line for Linux, macOS and Windows
-# and puts them on a draft GitHub release. Push a tag (git tag v0.2.0 &&
-# git push origin v0.2.0), check the draft, publish it.
+# and publishes them as a GitHub release. Push a tag (git tag v0.2.0 &&
+# git push origin v0.2.0).
 name: release
 
 on:
@@ -70,10 +70,10 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Draft release
+      - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${GITHUB_REF_NAME}"
           if [ "$GITHUB_REF_TYPE" != tag ]; then tag="nightly-$(date +%Y%m%d)-${GITHUB_SHA::7}"; fi
-          gh release create "$tag" dist/* --draft --generate-notes --target "$GITHUB_SHA" --title "docex $tag"
+          gh release create "$tag" dist/* --generate-notes --target "$GITHUB_SHA" --title "docex $tag"
