@@ -113,6 +113,8 @@ export interface View {
   path: string | null;
   dirty: boolean;
   warnings: string[];
+  /** The document's language ("de-DE"), for spell checking. */
+  lang?: string | null;
   /** Whether the last review decision can be undone (`undo_review`). */
   can_undo: boolean;
 }

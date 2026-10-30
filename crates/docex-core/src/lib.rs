@@ -289,6 +289,26 @@ impl Docx {
         out
     }
 
+    /// The document's language as Word records it ("de-DE"): the default of
+    /// its styles, else the first language set on its text.
+    pub fn language(&self) -> Option<String> {
+        let val = |e: &Element| e.attr("w:val").filter(|v| !v.is_empty()).map(String::from);
+        if let Some(r) = self.rels.find_by_type("/styles") {
+            if let Ok(Some(doc)) = self.pkg.read_xml_opt(&self.rels.resolve(r.target)) {
+                if let Some(l) = doc.root.child_path(&["w:docDefaults", "w:rPrDefault", "w:rPr", "w:lang"]).and_then(val) {
+                    return Some(l);
+                }
+            }
+        }
+        let mut found = None;
+        self.body().visit(&mut |e| {
+            if found.is_none() && e.is("w:lang") {
+                found = val(e);
+            }
+        });
+        found
+    }
+
     /// Data of the charts and text of the SmartArt diagrams in the body.
     pub fn graphics(&self) -> Graphics {
         let mut refs = Vec::new();

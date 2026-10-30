@@ -60,6 +60,8 @@ fn dispatch(st: &AppState, cmd: &str, a: &Value) -> Result<Value, String> {
         "recovery_check" => to(backend::recovery_check(arg(a, "path")?)),
         "recovery_open" => to(backend::recovery_open(st, arg(a, "path")?)?),
         "recovery_clear" => to(backend::recovery_clear(arg(a, "path")?)),
+        // The browser checks spelling itself.
+        "spellcheck" => Ok(arg::<Value>(a, "langs")?),
         "get_author" => to(backend::get_author(st)),
         "set_author" => to(backend::set_author(st, arg(a, "name")?)),
         // No AI in tests: nothing is configured.

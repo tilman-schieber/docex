@@ -48,6 +48,8 @@ pub struct View {
     path: Option<String>,
     dirty: bool,
     warnings: Vec<String>,
+    /// The document's language ("de-DE"), for spell checking.
+    lang: Option<String>,
     /// Whether the last review decision can be undone.
     can_undo: bool,
 }
@@ -88,6 +90,7 @@ fn view(s: &Session, warnings: Vec<String>) -> Result<View, String> {
         images,
         path: s.path.as_ref().map(|p| p.display().to_string()),
         dirty: s.dirty,
+        lang: doc.language(),
         warnings,
         can_undo: !s.undo.is_empty(),
     })

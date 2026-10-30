@@ -328,6 +328,7 @@ function plugins() {
 }
 
 const view = new EditorView($("#editor"), {
+  attributes: () => ({ spellcheck: spellOn() ? "true" : "false" }),
   state: EditorState.create({ doc: schema.nodes.doc.create(null, schema.nodes.para.create()), plugins: plugins() }),
   dispatchTransaction(tr: Transaction) {
     let t = tr;
@@ -536,6 +537,10 @@ function load(v: View, keepSelection = true) {
   for (const [k, url] of Object.entries(v.images)) imageUrls.set(k, url);
   setGraphics(v.model.graphics);
   reviewLog.resetFor(v.path);
+  if (v.lang !== spellLang) {
+    spellLang = v.lang ?? null;
+    void applySpellcheck();
+  }
   if (v.dirty) keepRecoverySoon();
   const sel = view.state.selection;
   const doc = modelToDoc(v.model);
@@ -617,6 +622,28 @@ async function confirmDiscard() {
   const yes = await ask("Discard unsaved changes?", { title: "docex", kind: "warning" });
   if (yes) dropRecovery();
   return yes;
+}
+
+// Spell checking: the document's language and the system's, as far as
+// dictionaries are installed (WebKitGTK uses Enchant / Hunspell).
+let spellLang: string | null | undefined;
+let spellWarned = "";
+function spellOn() {
+  return localStorage.getItem("docex-spell") !== "off";
+}
+
+async function applySpellcheck() {
+  const want = [spellLang, navigator.language].filter((l): l is string => !!l).map((l) => l.replace("-", "_"));
+  const used = spellOn() ? await invoke<string[]>("spellcheck", { langs: want }).catch(() => null) : await invoke<string[]>("spellcheck", { langs: [] }).catch(() => null);
+  view.setProps({});
+  if (!spellOn() || !used) return;
+  const missing = [...new Set(want.map((l) => l.split("_")[0]))].filter((b) => !used.some((u) => u.split("_")[0] === b));
+  const key = missing.join(",");
+  if (missing.length && key !== spellWarned) {
+    spellWarned = key;
+    const name = (b: string) => new Intl.DisplayNames(["en"], { type: "language" }).of(b) ?? b;
+    toast(`No spelling dictionary for ${missing.map(name).join(" or ")}: install one (Arch: hunspell-${missing[0] === "en" ? "en_us" : missing[0]}) and reopen the document.`);
+  }
 }
 
 // Crash recovery: while there are unsaved changes, the backend keeps a copy of
@@ -1042,6 +1069,15 @@ function paletteEntries(): Entry[] {
     { label: "Triage threads waiting on me", group: "Review", run: () => { cockpit.clearFilters(); cockpit.filterTo({ show: "mine" }); return cockpit.startTriage(); } },
     { label: `${sinceOn ? "Hide" : "Show"} what changed since I last saw it`, group: "Review", hint: "Alt+S", run: () => toggleSince() },
     { label: `Track changes: turn ${tracking ? "off" : "on"}`, group: "Command", run: toggleTrack },
+    {
+      label: `Spell checking: turn ${spellOn() ? "off" : "on"}`,
+      group: "Command",
+      run: () => {
+        localStorage.setItem("docex-spell", spellOn() ? "off" : "");
+        spellWarned = "";
+        void applySpellcheck();
+      },
+    },
     { label: "Save", group: "Command", hint: "Ctrl+S", run: () => saveFile(false) },
     { label: "Save as…", group: "Command", hint: "Ctrl+Shift+S", run: () => saveFile(true) },
     { label: "Open…", group: "Command", hint: "Ctrl+O", run: () => openFile() },

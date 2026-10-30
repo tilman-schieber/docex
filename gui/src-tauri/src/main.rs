@@ -140,6 +140,47 @@ fn set_author(state: State<AppState>, name: String) {
     backend::set_author(&state, name)
 }
 
+/// Spelling dictionaries Enchant can use ("en_US", "de_DE").
+fn dictionaries() -> Vec<String> {
+    std::process::Command::new("enchant-lsmod-2")
+        .arg("-list-dicts")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| l.split_whitespace().next().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
+/// Check spelling in `langs` ("de_DE", "en"; best match per language) as far
+/// as dictionaries exist; none turns it off. Returns the languages in use.
+#[tauri::command]
+fn spellcheck(webview: tauri::Webview, langs: Vec<String>) -> Vec<String> {
+    let have = dictionaries();
+    let mut use_: Vec<String> = Vec::new();
+    for l in &langs {
+        let base = l.split('_').next().unwrap_or(l);
+        let pick = have.iter().find(|d| *d == l).or_else(|| have.iter().find(|d| d.split('_').next() == Some(base)));
+        if let Some(d) = pick {
+            if !use_.contains(d) {
+                use_.push(d.clone());
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let langs = use_.clone();
+        let _ = webview.with_webview(move |wv| {
+            use webkit2gtk::{WebContextExt, WebViewExt};
+            if let Some(cx) = wv.inner().context() {
+                cx.set_spell_checking_enabled(!langs.is_empty());
+                let refs: Vec<&str> = langs.iter().map(String::as_str).collect();
+                cx.set_spell_checking_languages(&refs);
+            }
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = webview;
+    use_
+}
+
 #[tauri::command]
 fn ai_settings() -> ai::SettingsView {
     ai::view(&ai::load())
@@ -209,6 +250,7 @@ fn main() {
             recovery_check,
             recovery_open,
             recovery_clear,
+            spellcheck,
             get_author,
             set_author
         ])
