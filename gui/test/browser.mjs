@@ -43,8 +43,9 @@ export async function start({ width = 1440, height = 900 } = {}) {
   execFileSync("cargo", ["build", "-q", "-p", "docex-gui", "--bin", "devserver", "-p", "docex"], { cwd: root, stdio: "inherit" });
   const port = 1431 + Math.floor(Math.random() * 500);
   // Snapshots and AI settings go to the scratch dir, not the user's; the
-  // AI's answer is whatever a test writes to ai.txt there.
-  const env = { ...process.env, XDG_DATA_HOME: join(dir, "data"), XDG_CONFIG_HOME: join(dir, "config"), DOCEX_AUTHOR: "Tilman Schieber", DOCEX_FAKE_AI: join(dir, "ai.txt") };
+  // AI's answer is whatever a test writes to ai.txt there, a newer release
+  // what it writes to update.json.
+  const env = { ...process.env, XDG_DATA_HOME: join(dir, "data"), XDG_CONFIG_HOME: join(dir, "config"), DOCEX_AUTHOR: "Tilman Schieber", DOCEX_FAKE_AI: join(dir, "ai.txt"), DOCEX_FAKE_UPDATE: join(dir, "update.json") };
   const backend = spawn(join(root, "target/debug/devserver"), [String(port)], { env, stdio: ["ignore", "ignore", "pipe"] });
   await waitForLine(backend, /dev server on/, "devserver");
   process.env.DOCEX_DEVSERVER_PORT = String(port);

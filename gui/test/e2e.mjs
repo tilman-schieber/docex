@@ -281,6 +281,27 @@ try {
     await page.open(f);
     check(!(await toast()).includes("restored"), "nothing to restore after saving");
   });
+
+  await scenario("a newer release shows in the status bar until dismissed", async () => {
+    const f = scratch(dir, "review.docx");
+    const notice = () => page.eval(`document.querySelector("#status .update")?.textContent ?? ""`);
+    await page.open(f);
+    check(!(await notice()), "no notice without a newer release");
+    writeFileSync(join(dir, "update.json"), JSON.stringify({ version: "9.9.9", url: "https://github.com/tilman-schieber/docex/releases/tag/v9.9.9" }));
+    // The check runs once a day: forget today's.
+    await page.eval(`localStorage.removeItem("docex-update")`);
+    await page.open(f);
+    await page.waitFor(`document.querySelector("#status .update")`);
+    check((await notice()).includes("docex 9.9.9 is available"), `notice: ${await notice()}`);
+    await page.click("#status .update .get");
+    check(await page.eval(`window.__DOCEX_DEV__.calls.includes("open_release")`), "clicking should open the release page");
+    await page.click("#status .update .x");
+    check(!(await notice()), "× hides the notice");
+    await page.eval(`localStorage.removeItem("docex-update")`);
+    await page.open(f);
+    await page.settle();
+    check(!(await notice()), "a dismissed version stays hidden");
+  });
 } finally {
   await close();
 }

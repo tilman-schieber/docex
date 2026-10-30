@@ -381,6 +381,15 @@ main {
   color: var(--dim);
 }
 
+#status .update button {
+  color: var(--accent);
+}
+
+#status .update .x {
+  color: var(--faint);
+  padding: 0 4px;
+}
+
 #status .dirty {
   color: var(--orange);
 }

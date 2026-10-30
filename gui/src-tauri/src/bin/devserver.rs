@@ -71,6 +71,12 @@ fn dispatch(st: &AppState, cmd: &str, a: &Value) -> Result<Value, String> {
             Ok(p) => std::fs::read_to_string(p).map(Value::String).map_err(|e| e.to_string()),
             Err(_) => Err("no AI in the dev server".into()),
         },
+        // A newer version: whatever a test writes to the file named by DOCEX_FAKE_UPDATE.
+        "check_update" => match std::env::var("DOCEX_FAKE_UPDATE").ok().and_then(|p| std::fs::read_to_string(p).ok()) {
+            Some(v) => serde_json::from_str(&v).map_err(|e| e.to_string()),
+            None => Ok(Value::Null),
+        },
+        "open_release" => Ok(Value::Null),
         // No AI in tests: nothing is configured.
         "ai_settings" => Ok(json!({ "provider": "anthropic", "anthropic_model": "", "effort": "", "openai_base_url": "", "openai_model": "", "anthropic_key_set": false, "anthropic_key_from_env": false, "openai_key_set": false })),
         _ => Err(format!("{cmd}: not available in the dev server")),

@@ -71,6 +71,7 @@ import { imageUrls, KINDS, renderMath, schema } from "./schema";
 import { trackTransaction } from "./track";
 import { setGraphics } from "./chart";
 import { createFindBar, findPlugin } from "./find";
+import { checkUpdate, dismissed, dismissUpdate, openRelease, setUpdateChecks, updateChecksOn, type Update } from "./update";
 import * as reviewLog from "./review-log";
 import type { Change, Comment, HeaderFooter, View } from "./types";
 
@@ -829,6 +830,20 @@ function showChangePopover(el: HTMLElement) {
   pop.style.top = `${r.bottom + 6}px`;
 }
 
+/** A newer release, shown in the status bar until dismissed. */
+let update: Update | null = null;
+
+async function showUpdate(force = false) {
+  try {
+    const u = await checkUpdate(force);
+    update = u && (force || !dismissed(u)) ? u : null;
+    if (force && !u) toast("docex is up to date.");
+  } catch (e) {
+    toast(`Couldn't check for updates: ${e}`, "error");
+  }
+  renderStatus();
+}
+
 function renderStatus() {
   const s = $("#status");
   const dirty = isDirty();
@@ -837,6 +852,14 @@ function renderStatus() {
     dirty ? h("span", { class: "dirty" }, "● unsaved") : "",
     sectionTitle ? h("span", { class: "section" }, `§ ${sectionTitle}`) : "",
     h("span", { class: "spacer" }),
+    update
+      ? h(
+          "span",
+          { class: "update" },
+          h("button", { class: "get", onclick: () => void openRelease(update!) }, `docex ${update.version} is available`),
+          h("button", { class: "x", onclick: () => { dismissUpdate(update!); update = null; renderStatus(); } }, "×"),
+        )
+      : "",
     h("span", {}, tracking ? "tracking changes" : "editing directly"),
     h("button", {
       class: "author",
@@ -853,6 +876,9 @@ function renderStatus() {
     }, `@${author}`),
   );
   s.querySelector<HTMLElement>(".author")!.dataset.tip = "Your name on changes and comments  click to change";
+  const tip = (sel: string, t: string) => s.querySelector<HTMLElement>(sel)?.setAttribute("data-tip", t);
+  tip(".update .get", "Open the release page to download it");
+  tip(".update .x", "Don't remind me of this version");
   if (typeof updateToolbar === "function") updateToolbar();
 }
 
@@ -1115,6 +1141,10 @@ function paletteEntries(): Entry[] {
     { label: "Open…", group: "Command", hint: "Ctrl+O", run: () => openFile() },
     { label: "New document", group: "Command", hint: "Ctrl+N", run: newFile },
     { label: "Toggle outline", group: "View", hint: "Ctrl+1", run: () => togglePanel("outline") },
+    { label: "Check for updates", group: "docex", run: () => showUpdate(true) },
+    updateChecksOn()
+      ? { label: "Stop checking for updates", group: "docex", keywords: "update", run: () => { setUpdateChecks(false); update = null; renderStatus(); toast("docex won't check for updates any more."); } }
+      : { label: "Check for updates daily", group: "docex", keywords: "update", run: () => { setUpdateChecks(true); void showUpdate(); } },
     { label: "Toggle review panel", group: "View", hint: "Ctrl+2", run: () => togglePanel("sidebar") },
     { label: "Find…", group: "Command", hint: "Ctrl+F", run: () => findBar.open(false) },
     { label: "Find and replace…", group: "Command", hint: "Ctrl+H", run: () => findBar.open(true) },
@@ -1207,4 +1237,5 @@ void getCurrentWindow().onCloseRequested(async (e) => {
   if (p) await openFile(p);
   else await call("new_doc", {}, false);
   view.focus();
+  void showUpdate();
 })();

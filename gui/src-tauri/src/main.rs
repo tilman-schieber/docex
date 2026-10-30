@@ -5,6 +5,7 @@ mod ai;
 mod backend;
 mod recovery;
 mod snapshot;
+mod update;
 
 use backend::{AppState, Theme, View};
 use docex_core::docmodel::DocModel;
@@ -206,6 +207,16 @@ async fn ai_complete(app: tauri::AppHandle, req: ai::Request) -> Result<String, 
     ai::complete(app, req).await
 }
 
+#[tauri::command]
+async fn check_update() -> Result<Option<update::Update>, String> {
+    update::check().await
+}
+
+#[tauri::command]
+fn open_release(url: String) -> Result<(), String> {
+    update::open_release(&url)
+}
+
 /// A development build loads its page from the Vite dev server (`npx tauri
 /// dev` starts it). Run on its own, it would show "could not connect to
 /// localhost": say what to do instead.
@@ -270,6 +281,8 @@ fn main() {
             ai_settings,
             ai_settings_set,
             ai_complete,
+            check_update,
+            open_release,
             snapshot_swap,
             snapshot_put,
             comment_reply,

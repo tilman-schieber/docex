@@ -84,6 +84,8 @@ Its focus is the part of working with Word documents that takes the most time: *
 </tr>
 </table>
 
+Once a day the app asks GitHub whether there is a newer release and says so in the status bar; it sends nothing else. Turn it off with "Stop checking for updates" in the command palette (Ctrl+P).
+
 To work on it, run it from source with `npx tauri dev -- -- path/to/file.docx` in `gui/` (after `npm install`).
 
 ## AI agents
