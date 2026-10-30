@@ -146,6 +146,9 @@ pub struct DocModel {
     /// Headers and footers, for display (ignored on import).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub furniture: Vec<crate::HeaderFooter>,
+    /// Chart data and SmartArt text by placeholder key, for display.
+    #[serde(default)]
+    pub graphics: crate::Graphics,
 }
 
 pub fn kind_name(k: Kind) -> (String, u8) {

@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 
 const root = join(import.meta.dirname, "..", "..");
 const files = process.argv.slice(2).map((f) => resolve(f));
-if (!files.length) files.push(...["rich.docx", "math.docx", "pandoc-math.docx", "merged-cells.docx", "content-controls.docx", "formatting.docx", "header-footer.docx"].map((f) => join(root, "tests/fixtures", f)));
+if (!files.length) files.push(...["rich.docx", "math.docx", "pandoc-math.docx", "merged-cells.docx", "content-controls.docx", "formatting.docx", "header-footer.docx", "charts.docx"].map((f) => join(root, "tests/fixtures", f)));
 const dir = mkdtempSync(join(tmpdir(), "docex-gui-test-"));
 const cargo = (...a) => execFileSync("cargo", ["run", "-q", "-p", "docex-core", "--example", "modelcheck", "--", ...a], { cwd: root, encoding: "utf8" });
 

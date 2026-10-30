@@ -9,6 +9,12 @@ fn docx(body: &str) -> Docx {
 
 /// Like `docx`, with another `numbering.xml` and extra styles.
 fn docx_with(body: &str, numbering: Option<&str>, styles: &str) -> Docx {
+    docx_parts(body, numbering, styles, &[])
+}
+
+/// Like `docx_with`, plus extra parts `(name, relationship id, type, xml)`
+/// related to the main document.
+fn docx_parts(body: &str, numbering: Option<&str>, styles: &str, parts: &[(&str, &str, &str, &str)]) -> Docx {
     let blank = docex_core::template::blank("2026-01-01T00:00:00Z").unwrap();
     let mut zin = zip::ZipArchive::new(std::io::Cursor::new(blank)).unwrap();
     let mut zout = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -27,8 +33,18 @@ fn docx_with(body: &str, numbering: Option<&str>, styles: &str) -> Docx {
         if name == "word/styles.xml" {
             data = data.replace("</w:styles>", &format!("{styles}</w:styles>"));
         }
+        if name == "word/_rels/document.xml.rels" {
+            for (part, id, ty, _) in parts {
+                let target = part.trim_start_matches("word/");
+                data = data.replace("</Relationships>", &format!(r#"<Relationship Id="{id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/{ty}" Target="{target}"/></Relationships>"#));
+            }
+        }
         zout.start_file(name, opts).unwrap();
         zout.write_all(data.as_bytes()).unwrap();
+    }
+    for (part, _, _, xml) in parts {
+        zout.start_file(*part, opts).unwrap();
+        zout.write_all(xml.as_bytes()).unwrap();
     }
     Docx::from_bytes(zout.finish().unwrap().into_inner()).unwrap()
 }
@@ -876,4 +892,36 @@ fn headers_and_footers_are_shown_read_only() {
     assert!(r.changed());
     assert!(d.render(View::Review).contains("ACME Corp · Confidential"));
     assert_eq!(d.model().furniture.len(), 2);
+}
+
+// A column chart as Word writes it (string categories, number caches, rich title).
+const CHART_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:p><a:r><a:t>Revenue by quarter</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title><c:autoTitleDeleted val="0"/><c:plotArea><c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:strRef><c:f>Sheet1!$B$1</c:f><c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>2025</c:v></c:pt></c:strCache></c:strRef></c:tx><c:cat><c:strRef><c:f>Sheet1!$A$2:$A$5</c:f><c:strCache><c:ptCount val="4"/><c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v>Q2</c:v></c:pt><c:pt idx="2"><c:v>Q3</c:v></c:pt><c:pt idx="3"><c:v>Q4</c:v></c:pt></c:strCache></c:strRef></c:cat><c:val><c:numRef><c:f>Sheet1!$B$2:$B$5</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="4"/><c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>11</c:v></c:pt><c:pt idx="2"><c:v>15</c:v></c:pt><c:pt idx="3"><c:v>18</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser><c:ser><c:idx val="1"/><c:order val="1"/><c:tx><c:strRef><c:f>Sheet1!$C$1</c:f><c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>2026</c:v></c:pt></c:strCache></c:strRef></c:tx><c:cat><c:strRef><c:f>Sheet1!$A$2:$A$5</c:f><c:strCache><c:ptCount val="4"/><c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v>Q2</c:v></c:pt><c:pt idx="2"><c:v>Q3</c:v></c:pt><c:pt idx="3"><c:v>Q4</c:v></c:pt></c:strCache></c:strRef></c:cat><c:val><c:numRef><c:f>Sheet1!$C$2:$C$5</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="4"/><c:pt idx="0"><c:v>12</c:v></c:pt><c:pt idx="1"><c:v>14</c:v></c:pt><c:pt idx="2"><c:v>19</c:v></c:pt><c:pt idx="3"><c:v>23.5</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser></c:barChart></c:plotArea></c:chart></c:chartSpace>"#;
+
+const SMARTART_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><dgm:dataModel xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><dgm:ptLst><dgm:pt modelId="0" type="doc"><dgm:prSet/><dgm:t><a:bodyPr/><a:p><a:endParaRPr/></a:p></dgm:t></dgm:pt><dgm:pt modelId="1"><dgm:prSet/><dgm:t><a:bodyPr/><a:p><a:r><a:t>Plan</a:t></a:r></a:p></dgm:t></dgm:pt><dgm:pt modelId="2"><dgm:t><a:bodyPr/><a:p><a:r><a:t>Build</a:t></a:r></a:p></dgm:t></dgm:pt><dgm:pt modelId="3" type="parTrans"><dgm:t><a:p><a:r><a:t>ignored</a:t></a:r></a:p></dgm:t></dgm:pt><dgm:pt modelId="4"><dgm:t><a:bodyPr/><a:p><a:r><a:t>Ship</a:t></a:r></a:p></dgm:t></dgm:pt></dgm:ptLst></dgm:dataModel>"#;
+
+fn drawing(graphic: &str) -> String {
+    format!(r#"<w:r><w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><wp:extent cx="5486400" cy="3200400"/><wp:docPr id="1" name="Chart 1"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData>{graphic}</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"#)
+}
+
+#[test]
+fn charts_and_smartart_show_their_data() {
+    let body = format!(
+        "<w:p><w:r><w:t>Revenue grew.</w:t></w:r></w:p><w:p>{}</w:p><w:p>{}</w:p><w:p><w:r><w:t>After.</w:t></w:r></w:p>",
+        drawing(r#"<c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rIdC1"/>"#),
+        drawing(r#"<dgm:relIds xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:dm="rIdD1" r:lo="x" r:qs="y" r:cs="z"/>"#),
+    );
+    let mut d = docx_parts(&body, None, "", &[("word/charts/chart1.xml", "rIdC1", "chart", CHART_XML), ("word/diagrams/data1.xml", "rIdD1", "diagramData", SMARTART_XML)]);
+    let md = d.render(View::Review);
+    assert!(md.contains("<!--docex:chart rIdC1-->\n\n<!-- docex:chart rIdC1\nRevenue by quarter: column chart\n| | Q1 | Q2 | Q3 | Q4 |\n| 2025 | 10 | 11 | 15 | 18 |\n| 2026 | 12 | 14 | 19 | 23.5 |\n-->"), "{md}");
+    assert!(md.contains("<!-- docex:smartart rIdD1\n- Plan\n- Build\n- Ship\n-->"), "{md}");
+    let before = d.dom.to_xml();
+    assert!(!d.apply(&md, &opts(true)).unwrap().changed());
+    let m = d.model();
+    assert_eq!(m.graphics.charts["<!--docex:chart rIdC1-->"].series[1].values[3], Some(23.5));
+    assert!(!d.apply_model(&m, &opts(true)).unwrap().changed());
+    assert_eq!(d.dom.to_xml(), before);
+    // The data is read-only.
+    let r = d.apply(&md.replace("| 2025 | 10 |", "| 2025 | 99 |").replace("After.", "After this."), &opts(true)).unwrap();
+    assert!(r.warnings.iter().any(|w| w.contains("chart data")), "{:?}", r.warnings);
+    assert!(d.render(View::Review).contains("| 2025 | 10 |"));
 }

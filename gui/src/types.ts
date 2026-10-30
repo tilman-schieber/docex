@@ -45,6 +45,19 @@ export type MBlock =
   | { type: "control"; id: number; label: string; paras: MPara[]; locked?: boolean }
   | { type: "opaque"; id: number; label: string; preview: string };
 
+export interface Chart {
+  kind: string;
+  title: string;
+  categories: string[];
+  series: { name: string; values: (number | null)[] }[];
+}
+
+/** Chart data and SmartArt text by placeholder key. */
+export interface Graphics {
+  charts: Record<string, Chart>;
+  smartart: Record<string, string[]>;
+}
+
 /** A header or footer, as text (shown, not edited). */
 export interface HeaderFooter {
   footer: boolean;
@@ -68,6 +81,7 @@ export interface DocModel {
   boxes: MBox[];
   notes: MNote[];
   furniture?: HeaderFooter[];
+  graphics?: Graphics;
 }
 
 export interface Change {

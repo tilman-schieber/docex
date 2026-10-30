@@ -31,6 +31,29 @@ pub struct RenderCtx<'a> {
     pub labels: Option<&'a std::collections::HashMap<Vec<usize>, String>>,
     /// Headers and footers, shown as comments at the top and bottom.
     pub furniture: Vec<crate::HeaderFooter>,
+    /// Chart data and SmartArt text, shown as comments after their paragraph.
+    pub graphics: crate::Graphics,
+}
+
+pub const CHART_DATA: &str = "<!-- docex:chart ";
+pub const SMARTART_DATA: &str = "<!-- docex:smartart ";
+
+/// Read-only comment blocks with the data of the charts and SmartArt in `p`.
+fn graphics_after(p: &Para, cx: &RenderCtx, out: &mut String) {
+    for (_, it) in p.visible() {
+        let What::Obj { key, .. } = &it.what else { continue };
+        let id = key.trim_start_matches("<!--docex:").trim_end_matches("-->");
+        let (start, content) = if let Some(c) = cx.graphics.charts.get(key) {
+            (CHART_DATA, format!("{}\n{}", id.trim_start_matches("chart "), c.summary()))
+        } else if let Some(t) = cx.graphics.smartart.get(key) {
+            (SMARTART_DATA, format!("{}\n{}", id.trim_start_matches("smartart "), t.iter().map(|l| format!("- {l}")).collect::<Vec<_>>().join("\n")))
+        } else {
+            continue;
+        };
+        sep(out, false);
+        // "--" would end the comment early.
+        out.push_str(&format!("{start}{}\n-->", content.replace("--", "–")));
+    }
 }
 
 pub const HEADER_LINE: &str = "<!-- docex:header";
@@ -192,6 +215,7 @@ pub fn render(blocks: &[Block], cx: &RenderCtx) -> Rendered {
                 }
                 out.push_str(&text);
                 map.push(bi);
+                graphics_after(p, cx, &mut out);
                 prev_list = is_list;
                 if !is_list {
                     prev_top = None;

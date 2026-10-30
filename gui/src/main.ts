@@ -69,6 +69,7 @@ import { createCockpit } from "./cockpit";
 import { atomIndex, docToModel, modelToDoc, type PendingComment } from "./convert";
 import { imageUrls, KINDS, renderMath, schema } from "./schema";
 import { trackTransaction } from "./track";
+import { setGraphics } from "./chart";
 import type { Change, Comment, HeaderFooter, View } from "./types";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
@@ -473,6 +474,7 @@ function load(v: View, keepSelection = true) {
   current = v;
   tracking = v.track;
   for (const [k, url] of Object.entries(v.images)) imageUrls.set(k, url);
+  setGraphics(v.model.graphics);
   const sel = view.state.selection;
   const doc = modelToDoc(v.model);
   let state = EditorState.create({ doc, plugins: plugins() });

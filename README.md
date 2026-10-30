@@ -68,6 +68,7 @@ Files are changed in place with a `FILE.docx~` backup. Use `-o OUT.docx` to writ
 | Content controls around paragraphs (template fields, cover pages) | `<!-- docex:control b5 Customer -->` … paragraphs … `<!-- /docex:control -->`; edited inside the control, locked ones stay read-only, typing into a placeholder replaces it |
 | Tracked insertion / deletion | `{++new++}` / `{--old--}` |
 | Comment | `{==anchored text==}{>>Author: comment<<}` |
+| Charts, SmartArt (read-only) | `<!--docex:chart rId5-->` in the text, followed by a comment with the title, type and data table Word cached (SmartArt: its steps) |
 | Headers and footers (read-only) | `<!-- docex:header ACME · Confidential -->` at the top, `<!-- docex:footer … -->` at the bottom |
 | TOC, shapes, equations docex can't convert, page breaks | `<!-- docex:… -->` placeholders, kept as-is |
 
@@ -102,6 +103,7 @@ Things deliberately left out: spacing, fonts, font sizes, page layout. New text 
 - tracked changes in color; click one in the text to see who made it, accept or reject it, or comment on it (a replacement is decided as a whole, as in the sidebar)
 - comments, which you can add, reply to, resolve or delete
 - headers and footers (document number, version, "Confidential"), read-only, above and below the text
+- charts drawn from the data Word caches in the file (column, bar, line, area, pie; hover for values) and SmartArt as its steps
 - content controls (template fields, cover pages) with their name above them; locked ones read-only
 - tables, including merged cells: add and remove rows and columns, merge cells (drag across them) and split them
 - images, footnotes, text boxes and captions

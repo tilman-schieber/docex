@@ -1,12 +1,21 @@
 //! docex: work on the content of .docx files (text, tables, images, tracked
 //! changes, comments) through Markdown, without disturbing the rest.
 
+pub mod charts;
 pub mod comments;
 pub mod docmodel;
 pub mod math;
 pub mod mdparse;
 pub mod model;
 pub mod numbering;
+
+/// Charts and SmartArt of the body, by the key of their placeholder
+/// (`<!--docex:chart rId5-->`), for display.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct Graphics {
+    pub charts: std::collections::BTreeMap<String, charts::Chart>,
+    pub smartart: std::collections::BTreeMap<String, Vec<String>>,
+}
 
 /// A header or footer, as text (headers and footers are shown, not edited).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -280,6 +289,32 @@ impl Docx {
         out
     }
 
+    /// Data of the charts and text of the SmartArt diagrams in the body.
+    pub fn graphics(&self) -> Graphics {
+        let mut refs = Vec::new();
+        self.body().visit(&mut |e| {
+            if e.is("w:drawing") {
+                if let Some(r) = model::graphic_ref(e) {
+                    refs.push(r);
+                }
+            }
+        });
+        let mut g = Graphics::default();
+        for (kind, id) in refs {
+            let Some(rel) = self.rels.get(&id) else { continue };
+            let Ok(doc) = self.pkg.read_xml(&self.rels.resolve(rel.target)) else { continue };
+            let key = format!("<!--docex:{kind} {id}-->");
+            if kind == "chart" {
+                if let Some(c) = charts::parse_chart(&doc) {
+                    g.charts.insert(key, c);
+                }
+            } else {
+                g.smartart.insert(key, charts::smartart_text(&doc));
+            }
+        }
+        g
+    }
+
     pub fn text_boxes(&self) -> Vec<TextBox> {
         model::text_boxes(self.body(), &Ctx { styles: &self.styles, rels: &self.rels })
     }
@@ -314,6 +349,7 @@ impl Docx {
             id_prefix: std::cell::Cell::new("c"),
             labels: None,
             furniture: self.headers_footers(),
+            graphics: self.graphics(),
         }
     }
 
@@ -400,12 +436,30 @@ impl Docx {
 
     /// Apply an edited Markdown version of this document.
     pub fn apply(&mut self, edited: &str, opts: &Opts) -> Result<Report> {
-        // Headers and footers are shown, not edited: say so if they were changed.
-        let furniture = |md: &str| md.lines().filter(|l| l.starts_with(render::HEADER_LINE) || l.starts_with(render::FOOTER_LINE)).map(String::from).collect::<Vec<_>>();
-        let touched = furniture(edited) != furniture(&self.render(View::Review));
+        // Headers, footers and chart data are shown, not edited: say so if they were changed.
+        let shown = |md: &str, starts: &[&str]| {
+            let mut out = Vec::new();
+            let mut inside = false;
+            for l in md.lines() {
+                inside |= starts.iter().any(|s| l.starts_with(s));
+                if inside {
+                    out.push(l.to_string());
+                    inside = !l.trim_end().ends_with("-->");
+                }
+            }
+            out
+        };
+        let before = self.render(View::Review);
+        let furniture = [render::HEADER_LINE, render::FOOTER_LINE];
+        let graphics = [render::CHART_DATA, render::SMARTART_DATA];
+        let touched_furniture = shown(edited, &furniture) != shown(&before, &furniture);
+        let touched_graphics = shown(edited, &graphics) != shown(&before, &graphics);
         let mut r = self.apply_parsed(mdparse::parse_full(edited), opts)?;
-        if touched {
+        if touched_furniture {
             r.warnings.push("headers and footers are read-only in docex; edit them in Word".into());
+        }
+        if touched_graphics {
+            r.warnings.push("chart data and SmartArt text are read-only in docex; edit them in Word".into());
         }
         Ok(r)
     }
@@ -418,6 +472,7 @@ impl Docx {
         let known: HashSet<String> = self.comments.list.iter().map(|c| c.id.clone()).collect();
         let mut m = docmodel::export(&blocks, &r, &parsed, &notes, &boxes, &known, &self.labels(&blocks));
         m.furniture = self.headers_footers();
+        m.graphics = self.graphics();
         m
     }
 

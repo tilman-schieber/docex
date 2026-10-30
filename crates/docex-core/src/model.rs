@@ -756,7 +756,10 @@ fn run(p: &mut Para, r: &Element, ctx: &[usize], cx: &Ctx) {
             "w:endnoteReference" => obj(&format!("fn:e{}", e.attr("w:id").unwrap_or("?"))),
             "w:drawing" | "w:pict" | "w:object" => match image_target(e, cx.rels) {
                 Some(t) => obj(&format!("img:{t}")),
-                None if e.is("w:drawing") => obj("<!--docex:drawing-->"),
+                None if e.is("w:drawing") => match graphic_ref(e) {
+                    Some((kind, id)) => obj(&format!("<!--docex:{kind} {id}-->")),
+                    None => obj("<!--docex:drawing-->"),
+                },
                 None => obj("<!--docex:object-->"),
             },
             "mc:AlternateContent" => obj("<!--docex:shape-->"),
@@ -764,6 +767,21 @@ fn run(p: &mut Para, r: &Element, ctx: &[usize], cx: &Ctx) {
         };
         p.items.push(Item { ctx: ctx.to_vec(), run: Some(ri), what });
     }
+}
+
+/// A chart or SmartArt diagram in a drawing: ("chart" | "smartart", relationship id).
+pub fn graphic_ref(e: &Element) -> Option<(&'static str, String)> {
+    let mut found = None;
+    e.visit(&mut |n| {
+        if found.is_none() {
+            if n.is("c:chart") {
+                found = n.attr("r:id").map(|id| ("chart", id.to_string()));
+            } else if n.is("dgm:relIds") {
+                found = n.attr("r:dm").map(|id| ("smartart", id.to_string()));
+            }
+        }
+    });
+    found
 }
 
 /// Media target (relative to `word/`) of an inline picture, if it is one.

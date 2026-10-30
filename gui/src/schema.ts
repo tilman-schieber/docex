@@ -1,6 +1,7 @@
 import { Schema, type DOMOutputSpec, type Mark, type Node as PMNode } from "prosemirror-model";
 import { tableNodes } from "prosemirror-tables";
 import katex from "katex";
+import { chartElement, smartartElement } from "./chart";
 
 /** Typeset LaTeX into `el` (shows the source if it doesn't parse). */
 export function renderMath(el: HTMLElement, latex: string, display: boolean) {
@@ -124,7 +125,10 @@ export const schema = new Schema({
       atom: true,
       attrs: { key: {} },
       toDOM(n) {
-        const label = OBJ_LABELS[n.attrs.key] || n.attrs.key.replace(/<!--docex:|-->/g, "");
+        const key: string = n.attrs.key;
+        const drawn = key.startsWith("<!--docex:chart ") ? chartElement(key) : key.startsWith("<!--docex:smartart ") ? smartartElement(key) : null;
+        if (drawn) return drawn;
+        const label = OBJ_LABELS[key] || key.replace(/<!--docex:|-->/g, "").replace(/ rId\w+$/, "");
         return ["span", { class: "obj", title: "Not editable here; kept as it is" }, label];
       },
     },
