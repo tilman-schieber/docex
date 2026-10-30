@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>docex (dev)</title>
+  </head>
+  <body>
+    <!-- The editor in a browser, on the real backend (`devserver`), for tests and
+         screenshots. `?file=/path/to.docx` opens a document. Not part of the app. -->
+    <header id="toolbar"></header>
+    <main>
+      <nav id="outline"></nav>
+      <div id="page-area">
+        <div id="page-wrap"><div id="editor" class="page"></div></div>
+        <div id="rail" title="Activity in the document; click to jump"></div>
+      </div>
+      <aside id="sidebar"></aside>
+    </main>
+    <footer id="status"></footer>
+    <div id="popover" hidden></div>
+    <div id="modal" hidden></div>
+    <div id="toasts"></div>
+    <script>
+      // Stand-in for Tauri's IPC: backend commands go to the dev server (proxied
+      // by Vite at /invoke), window and dialog calls are answered here so nothing
+      // blocks a test.
+      const file = new URLSearchParams(location.search).get("file");
+      let next = 0;
+      window.__DOCEX_DEV__ = { saveAs: null, calls: [] };
+      window.__TAURI_INTERNALS__ = {
+        metadata: { currentWindow: { label: "main" }, currentWebview: { windowLabel: "main", label: "main" } },
+        transformCallback: () => ++next,
+        unregisterCallback() {},
+        convertFileSrc: (p) => p,
+        async invoke(cmd, args = {}) {
+          window.__DOCEX_DEV__.calls.push(cmd);
+          if (cmd === "initial_path") return file;
+          if (cmd.startsWith("plugin:event|")) return ++next;
+          if (cmd.startsWith("plugin:window|")) return null;
+          if (cmd === "plugin:dialog|ask" || cmd === "plugin:dialog|confirm") return true;
+          if (cmd === "plugin:dialog|save") return window.__DOCEX_DEV__.saveAs;
+          if (cmd.startsWith("plugin:")) return null;
+          const r = await fetch(`/invoke/${cmd}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(args) });
+          const v = await r.json();
+          if (!r.ok) throw v;
+          return v;
+        },
+      };
+    </script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
