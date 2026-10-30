@@ -4,6 +4,8 @@ All notable changes to docex. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-30
+
 ### Added
 
 - docex is now under the MIT license.
@@ -25,5 +27,6 @@ All notable changes to docex. The format follows [Keep a Changelog](https://keep
 
 First release: the `docex` command line and the desktop app, for Linux, macOS and Windows.
 
-[Unreleased]: https://github.com/tilman-schieber/docex/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/tilman-schieber/docex/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/tilman-schieber/docex/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tilman-schieber/docex/releases/tag/v0.1.0

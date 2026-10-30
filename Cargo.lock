@@ -821,7 +821,7 @@ dependencies = [
 
 [[package]]
 name = "docex"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -833,7 +833,7 @@ dependencies = [
 
 [[package]]
 name = "docex-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "pulldown-cmark",
@@ -845,7 +845,7 @@ dependencies = [
 
 [[package]]
 name = "docex-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "docex-core",
