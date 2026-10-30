@@ -188,7 +188,11 @@ pub fn build(model: &DocModel, changes: &[Change], comments: &[Comment]) -> Revi
         let chars = para_chars(p);
         if let Some(l) = p.kind.strip_prefix('h').and_then(|n| n.parse::<u8>().ok()) {
             path.retain(|(lv, _)| *lv < l);
-            path.push((l, visible(&chars).trim().to_string()));
+            let title = visible(&chars).trim().to_string();
+            path.push((l, match &p.label {
+                Some(n) => format!("{n} {title}"),
+                None => title,
+            }));
         }
         let section = path.iter().map(|(_, t)| t.clone()).collect();
         paras.push((ParaInfo { chars, section }, part));

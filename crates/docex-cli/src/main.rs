@@ -36,6 +36,10 @@ enum Cmd {
         /// The markers are ignored if the text is applied.
         #[arg(long)]
         ids: bool,
+        /// Show Word's automatic numbers ("3.2", "(b)") in front of numbered
+        /// headings and list items. For reading: don't apply this output.
+        #[arg(long)]
+        numbers: bool,
     },
     /// Every tracked change and comment thread with a stable id, its
     /// section and surrounding text: the list to review from.
@@ -313,7 +317,7 @@ fn main() -> Result<()> {
     }
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Cat { file, accepted, original, media, json, ids } => {
+        Cmd::Cat { file, accepted, original, media, json, ids, numbers } => {
             let doc = Docx::open(&file)?;
             let view = if accepted { View::Accepted } else if original { View::Original } else { View::Review };
             if let Some(dir) = media {
@@ -324,6 +328,8 @@ fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&blocks_json(&doc, view))?);
             } else if ids {
                 print!("{}", doc.render_with_ids());
+            } else if numbers {
+                print!("{}", doc.render_numbered(view));
             } else {
                 print!("{}", doc.render(view));
             }

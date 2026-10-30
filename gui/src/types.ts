@@ -27,6 +27,8 @@ export interface MPara {
   level: number;
   spans: Span[];
   new_comments?: NewComment[];
+  /** Word's automatic number, for display (not sent back). */
+  label?: string;
 }
 
 export type MBlock =

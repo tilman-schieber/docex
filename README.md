@@ -29,6 +29,7 @@ docex review report.docx --json --by Alice --in "Results"
 docex resolve report.docx --accept c4,c9 --reject c7   # all decisions at once, ids never shift
 docex accept report.docx --by "Alice" # or --all; reject works the same way
 docex cat report.docx --ids           # the document with ⟦c12⟧ / ⟦m3⟧ after each change and comment
+docex cat report.docx --numbers       # with Word's automatic numbers: "3.2 Liability", "(b) …" (for reading)
 docex comments report.docx
 docex comment report.docx --on "quoted text" "Please check this"   # refuses ambiguous quotes; --nth N, --in SECTION
 docex comment report.docx --reply m4 "Done"  # also --resolve / --reopen / --delete m4
@@ -49,7 +50,7 @@ Files are changed in place with a `FILE.docx~` backup. Use `-o OUT.docx` to writ
 | In Word | In docex |
 |---|---|
 | Heading 1–6 / Title | `#` … `######` |
-| Bulleted / numbered lists (nested) | `-` / `1.` |
+| Bulleted / numbered lists (nested) | `-` / `1.` (Word's own numbers, "3.2", "(b)", "iv.", with `cat --numbers`) |
 | Quote, code styles | `>` / fenced code |
 | Bold, italic, strikethrough, code | `**b**`, `*i*`, `~~s~~`, `` `c` `` |
 | Hyperlinks | `[text](url)` |
@@ -99,6 +100,7 @@ Things deliberately left out: spacing, fonts, colours, page layout. New text tak
 - images, footnotes, text boxes and captions
 
 It's built for reviewing, not just editing:
+- **Word's numbering:** numbered headings and lists show Word's own numbers ("3.2 Liability", "(b)", "Article IV"), worked out from the document's numbering definitions, so "see clause 4.2(b)" can be followed. Display only: Word keeps computing them.
 - **Outline:** the heading tree with per-section counts of changes and comments, plus an activity bar colored by author. It follows where you are and collapses; click to jump.
 - **Review feed:** changes and comment threads grouped by section, each with a few words of context. A deletion followed by an insertion reads as one `old → new` replacement. Comments expand inline to reply or resolve; clicking commented text opens its thread without taking the cursor out of the document. Deleting a thread asks for a second click.
 - **People:** a one-line summary ("143 changes by 7 · 15 threads (15 open) by 4") and a chip per person. Hover a chip for their breakdown; click to filter to them (shift+click adds people). Their edits stay highlighted in the text and everyone else's fade.

@@ -41,7 +41,7 @@ function inlineNodes(spans: Span[]): PMNode[] {
 }
 
 function para(p: MPara): PMNode {
-  return nodes.para.create({ kind: p.kind || "normal", level: p.level || 0 }, inlineNodes(p.spans));
+  return nodes.para.create({ kind: p.kind || "normal", level: p.level || 0, label: p.label ?? "" }, inlineNodes(p.spans));
 }
 
 function paras(ps: MPara[]): PMNode[] {

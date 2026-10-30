@@ -10,7 +10,7 @@ use crate::model::{Block, Marks, Para, Status, WrapKind, What};
 use crate::styles::Kind;
 use crate::xml::Node;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 fn is_false(b: &bool) -> bool {
     !*b
@@ -72,6 +72,9 @@ pub struct MPara {
     pub spans: Vec<Span>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub new_comments: Vec<NewComment>,
+    /// Word's automatic number ("3.2", "(b)"), for display only; ignored on import.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -178,6 +181,11 @@ fn enrich(p: &Para, e: &EPara) -> Vec<Extra> {
         .collect()
 }
 
+fn with_label(mut m: MPara, p: Option<&Para>, labels: &HashMap<Vec<usize>, String>) -> MPara {
+    m.label = p.and_then(|p| labels.get(&p.path)).cloned();
+    m
+}
+
 fn para_to_model(p: Option<&Para>, e: &EPara, known_comments: &HashSet<String>) -> MPara {
     let extra = p.map(|p| enrich(p, e)).unwrap_or_default();
     let (kind, level) = kind_name(e.kind);
@@ -222,7 +230,7 @@ fn para_to_model(p: Option<&Para>, e: &EPara, known_comments: &HashSet<String>) 
         s.t = a.key.clone();
         spans.push(s);
     }
-    MPara { kind, level, spans, new_comments: Vec::new() }
+    MPara { kind, level, spans, new_comments: Vec::new(), label: None }
 }
 
 fn spans_of(t: &ETable) -> Vec<Vec<[usize; 2]>> {
@@ -259,12 +267,13 @@ pub fn export(
     notes: &[crate::model::Note],
     boxes: &[crate::model::TextBox],
     known_comments: &HashSet<String>,
+    labels: &HashMap<Vec<usize>, String>,
 ) -> DocModel {
     let mut out = DocModel::default();
     for (i, eb) in parsed.blocks.iter().enumerate() {
         let b = rendered.map.get(i).and_then(|bi| blocks.get(*bi));
         let mb = match (eb, b) {
-            (EBlock::Para(e), Some(Block::Para(p))) => MBlock::Para(para_to_model(Some(p), e, known_comments)),
+            (EBlock::Para(e), Some(Block::Para(p))) => MBlock::Para(with_label(para_to_model(Some(p), e, known_comments), Some(p), labels)),
             (EBlock::Para(e), _) => MBlock::Para(para_to_model(None, e, known_comments)),
             (EBlock::Table(rows), Some(Block::Table(t))) => {
                 // Visible cells map to the Word cells where their merges start.
@@ -281,7 +290,10 @@ pub fn export(
                                     c.paras
                                         .iter()
                                         .enumerate()
-                                        .map(|(pi, e)| para_to_model(cell.and_then(|c| c.paras.get(pi)), e, known_comments))
+                                        .map(|(pi, e)| {
+                                            let p = cell.and_then(|c| c.paras.get(pi));
+                                            with_label(para_to_model(p, e, known_comments), p, labels)
+                                        })
                                         .collect()
                                 })
                                 .collect()

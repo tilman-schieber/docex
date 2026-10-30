@@ -508,6 +508,21 @@ main {
 .ProseMirror > p.lvl-1 + p.k-number.lvl-2,
 .ProseMirror > p.lvl-0 + p.k-number.lvl-2 { counter-reset: n2; }
 
+/* Word's own numbers ("3.2", "(b)", "Article IV"), where the document has them. */
+.ProseMirror p.k-number.has-label { padding-left: 0; }
+.ProseMirror p.k-number.has-label::before {
+  content: attr(data-label);
+  position: static;
+  display: inline-block;
+  margin-right: 0.5em;
+}
+.ProseMirror .has-label:not(.k-number)::before {
+  content: attr(data-label);
+  color: var(--accent);
+  margin-right: 0.6em;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Tracked changes and comments */
 .ProseMirror ins {
   color: var(--green);

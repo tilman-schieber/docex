@@ -49,7 +49,8 @@ export const schema = new Schema({
   nodes: {
     doc: { content: "block+" },
     para: {
-      attrs: { kind: { default: "normal" }, level: { default: 0 } },
+      // `label`: Word's automatic number ("3.2", "(b)"), shown but never saved.
+      attrs: { kind: { default: "normal" }, level: { default: 0 }, label: { default: "" } },
       content: "inline*",
       group: "block",
       parseDOM: [
@@ -60,9 +61,11 @@ export const schema = new Schema({
         { tag: "pre", preserveWhitespace: "full" as const, attrs: { kind: "code" } },
       ],
       toDOM(n): DOMOutputSpec {
-        const { kind, level } = n.attrs;
+        const { kind, level, label } = n.attrs;
         const tag = /^h[1-6]$/.test(kind) ? kind : "p";
-        return [tag, { class: `k-${kind} lvl-${level}`, "data-kind": kind, "data-level": String(level) }, 0];
+        const attrs: Record<string, string> = { class: `k-${kind} lvl-${level}${label ? " has-label" : ""}`, "data-kind": kind, "data-level": String(level) };
+        if (label) attrs["data-label"] = label;
+        return [tag, attrs, 0];
       },
     },
     text: { group: "inline" },

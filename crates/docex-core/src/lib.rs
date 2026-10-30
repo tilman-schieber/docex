@@ -6,6 +6,7 @@ pub mod docmodel;
 pub mod math;
 pub mod mdparse;
 pub mod model;
+pub mod numbering;
 pub mod package;
 pub mod patch;
 pub mod render;
@@ -22,7 +23,7 @@ use package::{Package, Rels};
 use patch::{align, block_sim, Align, Carry, Opts, PatchCtx, Splice, Stats};
 use render::{RenderCtx, View};
 use revisions::Change;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use styles::Styles;
 use xml::{Document, Element, Node};
@@ -236,7 +237,7 @@ impl Docx {
                 });
             }
         }
-        RenderCtx { view, comments: &self.comments, ranged, notes, boxes, ids: false, id_prefix: std::cell::Cell::new("c") }
+        RenderCtx { view, comments: &self.comments, ranged, notes, boxes, ids: false, id_prefix: std::cell::Cell::new("c"), labels: None }
     }
 
     fn render_full(&self, view: View) -> render::Rendered {
@@ -251,6 +252,39 @@ impl Docx {
     /// The review view with ids after each change and comment (`⟦c12⟧`,
     /// `⟦m3⟧`), as used by `docex review` / `resolve`. The markers are
     /// ignored when the text is applied.
+    /// Word's automatic numbers ("3.2", "(b)") of the numbered paragraphs
+    /// in the body, by paragraph path, counted in document order.
+    pub fn labels(&self, blocks: &[Block]) -> HashMap<Vec<usize>, String> {
+        let n = numbering::Numbering::load(self.numbering.as_ref(), &self.styles);
+        let mut counter = numbering::Counter::default();
+        let mut out = HashMap::new();
+        let mut visit = |p: &model::Para| {
+            let Some((num, lvl, style)) = self.styles.num_of(p.ppr.as_ref()) else { return };
+            let lvl = lvl.or_else(|| style.and_then(|s| n.level_of_style(&num, &s))).unwrap_or(0);
+            if let Some(l) = counter.next(&n, &num, lvl) {
+                out.insert(p.path.clone(), l);
+            }
+        };
+        for b in blocks {
+            match b {
+                Block::Para(p) => visit(p),
+                Block::Table(t) => t.rows.iter().flat_map(|r| &r.cells).flat_map(|c| &c.paras).for_each(&mut visit),
+                Block::Opaque { .. } => {}
+            }
+        }
+        out
+    }
+
+    /// Markdown with Word's automatic numbers in front of numbered headings
+    /// and list items. For reading: the numbers are not part of the text.
+    pub fn render_numbered(&self, view: View) -> String {
+        let (blocks, notes, boxes) = (self.blocks(), self.notes(), self.text_boxes());
+        let labels = self.labels(&blocks);
+        let mut cx = self.render_ctx(view, &notes, &boxes);
+        cx.labels = Some(&labels);
+        render::render(&blocks, &cx).md
+    }
+
     pub fn render_with_ids(&self) -> String {
         let (blocks, notes, boxes) = (self.blocks(), self.notes(), self.text_boxes());
         let mut cx = self.render_ctx(View::Review, &notes, &boxes);
@@ -297,7 +331,7 @@ impl Docx {
         let r = render::render(&blocks, &self.render_ctx(View::Review, &notes, &boxes));
         let parsed = mdparse::parse_full(&r.md);
         let known: HashSet<String> = self.comments.list.iter().map(|c| c.id.clone()).collect();
-        docmodel::export(&blocks, &r, &parsed, &notes, &boxes, &known)
+        docmodel::export(&blocks, &r, &parsed, &notes, &boxes, &known, &self.labels(&blocks))
     }
 
     /// Apply an edited model (see [`Docx::model`]).

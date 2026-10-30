@@ -179,7 +179,8 @@ export function analyze(doc: PMNode, v: View | null, me: string): Index {
   let inNotes = false;
   doc.forEach((n, pos) => {
     if (n.type === schema.nodes.para && /^h[1-6]$/.test(n.attrs.kind)) {
-      sections.push(mk(Number(n.attrs.kind[1]), n.textContent.trim() || "(untitled)", pos));
+      const title = n.textContent.trim() || "(untitled)";
+      sections.push(mk(Number(n.attrs.kind[1]), n.attrs.label ? `${n.attrs.label} ${title}` : title, pos));
       inNotes = false;
     } else if (n.type === schema.nodes.footnote && !inNotes) {
       sections.push(mk(1, "Footnotes", pos));

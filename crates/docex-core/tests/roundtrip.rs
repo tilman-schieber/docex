@@ -4,6 +4,11 @@ use std::io::{Read, Write};
 
 /// A docx whose body is `body`, built on the blank template.
 fn docx(body: &str) -> Docx {
+    docx_with(body, None, "")
+}
+
+/// Like `docx`, with another `numbering.xml` and extra styles.
+fn docx_with(body: &str, numbering: Option<&str>, styles: &str) -> Docx {
     let blank = docex_core::template::blank("2026-01-01T00:00:00Z").unwrap();
     let mut zin = zip::ZipArchive::new(std::io::Cursor::new(blank)).unwrap();
     let mut zout = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -15,6 +20,12 @@ fn docx(body: &str) -> Docx {
         f.read_to_string(&mut data).unwrap();
         if name == "word/document.xml" {
             data = data.replace("<w:body>", &format!("<w:body>{body}"));
+        }
+        if let (Some(n), "word/numbering.xml") = (numbering, name.as_str()) {
+            data = n.to_string();
+        }
+        if name == "word/styles.xml" {
+            data = data.replace("</w:styles>", &format!("{styles}</w:styles>"));
         }
         zout.start_file(name, opts).unwrap();
         zout.write_all(data.as_bytes()).unwrap();
@@ -687,4 +698,65 @@ fn new_table_with_merged_cells() {
     assert!(out.contains("<td colspan=\"2\">**Wide**</td>\n<td rowspan=\"2\">**Tall**</td>"), "{out}");
     assert!(out.contains("<td>c</td>\n<td>d</td>\n<td>e</td>"), "{out}");
     assert!(!d.apply(&out, &opts(false)).unwrap().changed());
+}
+
+const NUMBERING: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="10"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:pStyle w:val="Heading1"/><w:lvlText w:val="%1"/></w:lvl><w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:pStyle w:val="Clause"/><w:lvlText w:val="%1.%2"/></w:lvl><w:lvl w:ilvl="2"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="(%3)"/></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="11"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="lowerRoman"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="12"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="upperRoman"/><w:lvlText w:val="Article %1"/></w:lvl><w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:isLgl/><w:lvlText w:val="%1.%2"/></w:lvl></w:abstractNum><w:num w:numId="10"><w:abstractNumId w:val="10"/></w:num><w:num w:numId="11"><w:abstractNumId w:val="11"/></w:num><w:num w:numId="12"><w:abstractNumId w:val="11"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num><w:num w:numId="13"><w:abstractNumId w:val="12"/></w:num></w:numbering>"#;
+
+// "Clause" is numbered through its style, its level comes from the list's pStyle.
+const CLAUSE_STYLE: &str = r#"<w:style w:type="paragraph" w:styleId="Clause"><w:name w:val="Clause"/><w:basedOn w:val="Normal"/><w:pPr><w:numPr><w:numId w:val="10"/></w:numPr></w:pPr></w:style>"#;
+
+fn numbered(style: &str, num: Option<(u32, u32)>, text: &str) -> String {
+    let st = if style.is_empty() { String::new() } else { format!(r#"<w:pStyle w:val="{style}"/>"#) };
+    let np = num.map(|(n, l)| format!(r#"<w:numPr><w:ilvl w:val="{l}"/><w:numId w:val="{n}"/></w:numPr>"#)).unwrap_or_default();
+    format!(r#"<w:p><w:pPr>{st}{np}</w:pPr><w:r><w:t>{text}</w:t></w:r></w:p>"#)
+}
+
+#[test]
+fn automatic_numbers_are_worked_out() {
+    let body = [
+        numbered("Heading1", Some((10, 0)), "Scope"),
+        numbered("Clause", None, "First clause."),
+        numbered("Clause", None, "Second clause."),
+        numbered("", Some((10, 2)), "A point."),
+        numbered("", Some((10, 2)), "Another point."),
+        numbered("Heading1", Some((10, 0)), "Liability"),
+        numbered("Clause", None, "Limited."),
+        numbered("", Some((11, 0)), "one"),
+        numbered("", Some((11, 0)), "two"),
+        numbered("", None, "Plain text."),
+        numbered("", Some((12, 0)), "restarted"),
+        numbered("", Some((13, 0)), "Definitions"),
+        numbered("", Some((13, 1)), "Legal sub-clause"),
+    ]
+    .concat();
+    let mut d = docx_with(&body, Some(NUMBERING), CLAUSE_STYLE);
+    let md = d.render_numbered(View::Review);
+    for want in [
+        "# 1 Scope",
+        "1.1 First clause.",
+        "1.2 Second clause.",
+        "(a) A point.",
+        "(b) Another point.",
+        "# 2 Liability",
+        "2.1 Limited.",
+        "i. one",
+        "ii. two",
+        "i. restarted",
+        "Article I Definitions",
+        "1.1 Legal sub-clause",
+    ] {
+        assert!(md.contains(want), "missing {want:?} in\n{md}");
+    }
+    // Only a view: the normal Markdown has no numbers, and applying it changes nothing.
+    let plain = d.render(View::Review);
+    assert!(plain.contains("# Scope") && !plain.contains("1.1 First"), "{plain}");
+    assert!(!d.apply(&plain, &opts(true)).unwrap().changed());
+    // The GUI model carries them; review sections name them.
+    let m = d.model();
+    let labels: Vec<String> = m.blocks.iter().filter_map(|b| match b {
+        docex_core::docmodel::MBlock::Para(p) => p.label.clone(),
+        _ => None,
+    }).collect();
+    assert_eq!(labels[..3], ["1", "1.1", "1.2"]);
+    assert!(!d.apply_model(&m, &opts(true)).unwrap().changed());
 }

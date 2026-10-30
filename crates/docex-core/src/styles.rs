@@ -150,6 +150,32 @@ impl Styles {
             .unwrap_or(true)
     }
 
+    /// The list a paragraph is numbered in: numId, level (if given) and the
+    /// style the numbering came from (if it came from a style).
+    pub fn num_of(&self, ppr: Option<&Element>) -> Option<(String, Option<u8>, Option<String>)> {
+        let numpr = ppr.and_then(|p| p.child("w:numPr"));
+        let direct = numpr.and_then(|n| n.child("w:numId")).and_then(|n| n.attr("w:val")).map(String::from);
+        let mut lvl = numpr.and_then(|n| n.child("w:ilvl")).and_then(|n| n.attr("w:val")).and_then(|v| v.parse::<u8>().ok());
+        let style = ppr
+            .and_then(|p| p.child("w:pStyle"))
+            .and_then(|s| s.attr("w:val"))
+            .map(String::from)
+            .or_else(|| self.by_id.values().find(|s| s.is_default && !s.char_style).map(|s| s.id.clone()));
+        let chain = style.as_deref().map(|s| self.chain(s)).unwrap_or_default();
+        let mut from_style = None;
+        let mut num = direct;
+        for st in &chain {
+            if num.is_none() && st.num_id.is_some() {
+                num = st.num_id.clone();
+                from_style = Some(st.id.clone());
+            }
+            if lvl.is_none() {
+                lvl = st.num_lvl;
+            }
+        }
+        num.filter(|id| id != "0").map(|id| (id, lvl, from_style))
+    }
+
     /// Kind of a paragraph from its `w:pPr`.
     pub fn para_kind(&self, ppr: Option<&Element>) -> Kind {
         let style = ppr

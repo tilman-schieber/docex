@@ -12,7 +12,7 @@ docex lets you read, review and edit a .docx through the command line. The .docx
    - for comments: `text`, `anchor`, `replies` and `resolved`
 
    The summary counts changes and comments per person. Filters: `--by NAME`, `--kind replace|insert|delete|format|comment|change`, `--in SECTION`, `--open` (unresolved threads only). Without `--json` you get a readable list grouped by section.
-2. **Read more context if needed:** `docex cat FILE --ids` shows the whole document with `⟦c12⟧` after every change and `⟦m3⟧` after every comment.
+2. **Read more context if needed:** `docex cat FILE --ids` shows the whole document with `⟦c12⟧` after every change and `⟦m3⟧` after every comment. `docex cat FILE --numbers` shows Word's automatic numbers ("3.2", "(b)") so you can follow cross-references; it is for reading only, edit the plain `docex cat` output.
 3. **Decide in one call:** `docex resolve FILE --accept c4,c9,c12 --reject c7`. Ids are Word's own, so they never shift: decide everything, then resolve once. Any Word id inside an item selects the whole item (both halves of a replacement). Unknown ids are refused before anything changes. Per person: `docex accept FILE --by "Name"`.
 4. **Answer comments:** `docex comment FILE --reply m3 "text"`, `--resolve m3`, `--reopen m3`, `--delete m3`.
 

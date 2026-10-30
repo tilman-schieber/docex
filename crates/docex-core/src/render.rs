@@ -26,6 +26,17 @@ pub struct RenderCtx<'a> {
     /// Id prefix of the part being rendered: c (body), f / e (notes).
     pub id_prefix: std::cell::Cell<&'static str>,
     pub boxes: &'a [TextBox],
+    /// Automatic numbers to show in front of paragraphs, by paragraph path
+    /// (a reading view: they don't parse back as part of the text).
+    pub labels: Option<&'a std::collections::HashMap<Vec<usize>, String>>,
+}
+
+/// A paragraph's text with its automatic number in front, if shown.
+fn labelled(p: &Para, text: String, cx: &RenderCtx) -> String {
+    match cx.labels.and_then(|l| l.get(&p.path)) {
+        Some(l) => format!("{l} {text}"),
+        None => text,
+    }
 }
 
 /// Rendered Markdown, with what each Markdown block came from.
@@ -97,6 +108,9 @@ pub fn render(blocks: &[Block], cx: &RenderCtx) -> Rendered {
             Block::Para(p) => {
                 let mode = Mode { heading: matches!(p.kind, Kind::Heading(_)), code: p.kind == Kind::Code, ..Default::default() };
                 let Some(text) = inline(p, mode, cx) else { continue };
+                // A numbered item's own number replaces the "1." marker.
+                let own_number = matches!(p.kind, Kind::Number(_)) && cx.labels.is_some_and(|l| l.contains_key(&p.path));
+                let text = if own_number { text } else { labelled(p, text, cx) };
                 if p.kind == Kind::Code {
                     // A code paragraph with line breaks gets a fence of its own
                     // ("br"), where each line is a break, not a paragraph.
@@ -143,7 +157,8 @@ pub fn render(blocks: &[Block], cx: &RenderCtx) -> Rendered {
                         let l = (l as usize).min(list_stack.len());
                         list_stack.truncate(l);
                         let indent = if l == 0 { 0 } else { list_stack[l - 1] };
-                        let marker = if matches!(p.kind, Kind::Bullet(_)) { "- " } else { "1. " };
+                        let own = cx.labels.and_then(|m| m.get(&p.path)).filter(|_| own_number).map(|n| format!("{n} "));
+                        let marker = own.as_deref().unwrap_or(if matches!(p.kind, Kind::Bullet(_)) { "- " } else { "1. " });
                         out.push_str(&" ".repeat(indent));
                         out.push_str(marker);
                         list_stack.push(indent + marker.len());
@@ -249,7 +264,7 @@ fn pipe_table(t: &Table, cx: &RenderCtx) -> String {
                 .map(|c| {
                     c.paras
                         .iter()
-                        .map(|p| inline(p, Mode { table: true, ..Default::default() }, cx).unwrap_or_default())
+                        .map(|p| labelled(p, inline(p, Mode { table: true, ..Default::default() }, cx).unwrap_or_default(), cx))
                         .collect::<Vec<_>>()
                         .join("<br>")
                 })
@@ -279,7 +294,7 @@ fn html_table(t: &Table, cx: &RenderCtx) -> String {
         s.push_str("<tr>\n");
         for a in anchors {
             let cell = &t.rows[ri].cells[a.cell];
-            let text = cell.paras.iter().map(|p| inline(p, mode, cx).unwrap_or_default()).collect::<Vec<_>>().join("<br>");
+            let text = cell.paras.iter().map(|p| labelled(p, inline(p, mode, cx).unwrap_or_default(), cx)).collect::<Vec<_>>().join("<br>");
             s.push_str("<td");
             if a.colspan > 1 {
                 s.push_str(&format!(" colspan=\"{}\"", a.colspan));
