@@ -2,6 +2,7 @@
 //! each item tied back to the XML it came from so edits can be patched in.
 
 use crate::package::Rels;
+use std::collections::HashMap;
 use crate::styles::{Kind, Styles};
 use crate::xml::{Element, Node};
 
@@ -77,9 +78,24 @@ pub struct Para {
     pub wraps: Vec<Wrap>,
 }
 
+/// A cell's part in a vertical merge (`w:vMerge`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VMerge {
+    None,
+    /// First cell of a vertical merge; holds the content.
+    Restart,
+    /// Covered by the cell above.
+    Continue,
+}
+
 #[derive(Clone, Debug)]
 pub struct Cell {
     pub paras: Vec<Para>,
+    /// Grid columns the cell covers (`w:gridSpan`).
+    pub span: usize,
+    pub vmerge: VMerge,
+    /// First grid column.
+    pub col: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -89,11 +105,73 @@ pub struct Row {
     pub cell_idx: Vec<usize>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableKind {
+    /// One cell per column in every row: a Markdown pipe table.
+    Simple,
+    /// Merged cells (column spans, vertical merges): an HTML table.
+    Grid,
+    /// Structure docex doesn't edit (nested tables, content controls, …).
+    Opaque,
+}
+
 #[derive(Clone, Debug)]
 pub struct Table {
     pub idx: usize,
     pub rows: Vec<Row>,
-    pub simple: bool,
+    pub kind: TableKind,
+    /// Number of grid columns.
+    pub cols: usize,
+}
+
+/// A visible cell of a table: the cell where a merge starts, with how far it
+/// reaches (HTML's colspan and rowspan).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Anchor {
+    pub row: usize,
+    /// Index into the row's cells.
+    pub cell: usize,
+    pub col: usize,
+    pub colspan: usize,
+    pub rowspan: usize,
+}
+
+impl Table {
+    pub fn editable(&self) -> bool {
+        self.kind != TableKind::Opaque
+    }
+
+    /// The visible cells of each row, left to right. Cells covered by a
+    /// vertical merge from above are not listed; one without a matching cell
+    /// above stands for itself.
+    pub fn anchors(&self) -> Vec<Vec<Anchor>> {
+        let mut out: Vec<Vec<Anchor>> = Vec::with_capacity(self.rows.len());
+        // Open vertical merges: start column -> (row, index in that row's anchors).
+        let mut open: HashMap<usize, (usize, usize)> = HashMap::new();
+        for (ri, row) in self.rows.iter().enumerate() {
+            let mut list = Vec::new();
+            let mut still = HashMap::new();
+            for (ci, c) in row.cells.iter().enumerate() {
+                if c.vmerge == VMerge::Continue {
+                    if let Some(&(r0, a0)) = open.get(&c.col) {
+                        let a: &mut Anchor = &mut out[r0][a0];
+                        if a.colspan == c.span && r0 + a.rowspan == ri {
+                            a.rowspan += 1;
+                            still.insert(c.col, (r0, a0));
+                            continue;
+                        }
+                    }
+                }
+                if c.vmerge != VMerge::None {
+                    still.insert(c.col, (ri, list.len()));
+                }
+                list.push(Anchor { row: ri, cell: ci, col: c.col, colspan: c.span, rowspan: 1 });
+            }
+            open = still;
+            out.push(list);
+        }
+        out
+    }
 }
 
 /// A footnote or endnote, labelled as in Markdown (`3`, endnotes `e3`).
@@ -363,7 +441,9 @@ fn opaque_label(e: &Element) -> String {
 
 fn table(e: &Element, idx: usize, cx: &Ctx) -> Table {
     let mut rows = Vec::new();
+    // Anything docex can't edit makes the table opaque; merges only make it a grid.
     let mut simple = true;
+    let mut merged = false;
     for (ri, rc) in e.children.iter().enumerate() {
         let Node::Element(tr) = rc else { continue };
         if !tr.is("w:tr") {
@@ -372,8 +452,14 @@ fn table(e: &Element, idx: usize, cx: &Ctx) -> Table {
             }
             continue;
         }
+        if let Some(pr) = tr.child("w:trPr") {
+            if pr.child("w:gridBefore").is_some() || pr.child("w:gridAfter").is_some() {
+                simple = false;
+            }
+        }
         let mut cells = Vec::new();
         let mut cell_idx = Vec::new();
+        let mut col = 0;
         for (ci, cc) in tr.children.iter().enumerate() {
             let Node::Element(tc) = cc else { continue };
             if !tc.is("w:tc") {
@@ -382,11 +468,19 @@ fn table(e: &Element, idx: usize, cx: &Ctx) -> Table {
                 }
                 continue;
             }
+            let mut span = 1;
+            let mut vmerge = VMerge::None;
             if let Some(pr) = tc.child("w:tcPr") {
-                let span = pr.child("w:gridSpan").and_then(|g| g.attr("w:val")).unwrap_or("1");
-                if span != "1" || pr.child("w:vMerge").is_some() || pr.child("w:hMerge").is_some() {
+                span = pr.child("w:gridSpan").and_then(|g| g.attr("w:val")?.parse().ok()).unwrap_or(1).max(1);
+                if let Some(v) = pr.child("w:vMerge") {
+                    vmerge = if v.attr("w:val") == Some("restart") { VMerge::Restart } else { VMerge::Continue };
+                }
+                if pr.child("w:hMerge").is_some() {
                     simple = false;
                 }
+            }
+            if span > 1 || vmerge != VMerge::None {
+                merged = true;
             }
             let mut paras = Vec::new();
             for (pi, pc) in tc.children.iter().enumerate() {
@@ -400,19 +494,24 @@ fn table(e: &Element, idx: usize, cx: &Ctx) -> Table {
             if paras.is_empty() {
                 simple = false;
             }
-            cells.push(Cell { paras });
+            cells.push(Cell { paras, span, vmerge, col });
             cell_idx.push(ci);
+            col += span;
         }
         rows.push(Row { child_idx: ri, cells, cell_idx });
     }
-    if let Some(n) = rows.first().map(|r| r.cells.len()) {
-        if rows.iter().any(|r| r.cells.len() != n) || n == 0 {
-            simple = false;
-        }
-    } else {
+    // Every row must cover the same grid columns.
+    let width = |r: &Row| r.cells.iter().map(|c| c.span).sum::<usize>();
+    let cols = rows.first().map(width).unwrap_or(0);
+    if cols == 0 || rows.iter().any(|r| width(r) != cols) {
         simple = false;
     }
-    Table { idx, rows, simple }
+    let kind = match (simple, merged) {
+        (false, _) => TableKind::Opaque,
+        (true, false) => TableKind::Simple,
+        (true, true) => TableKind::Grid,
+    };
+    Table { idx, rows, kind, cols }
 }
 
 pub fn para(e: &Element, path: Vec<usize>, cx: &Ctx) -> Para {

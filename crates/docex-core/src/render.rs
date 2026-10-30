@@ -1,7 +1,7 @@
 //! Projection -> Markdown with CriticMarkup.
 
 use crate::comments::Comments;
-use crate::model::{image_alt, Block, Marks, Note, Para, Status, Table, TextBox, What};
+use crate::model::{image_alt, Block, Marks, Note, Para, Status, Table, TableKind, TextBox, What};
 use crate::styles::Kind;
 use std::collections::HashSet;
 
@@ -44,8 +44,17 @@ pub const HEADER: &str = "<!-- docex: edit freely. {++insert++} {--delete--} {~~
 #[derive(Clone, Copy, Default)]
 struct Mode {
     table: bool,
+    /// In an HTML table cell (`|` needs no escape there).
+    html: bool,
     heading: bool,
     code: bool,
+}
+
+impl Mode {
+    /// Whether `|` must be escaped (pipe table cells).
+    fn pipes(self) -> bool {
+        self.table && !self.html
+    }
 }
 
 enum Tok {
@@ -86,7 +95,7 @@ pub fn render(blocks: &[Block], cx: &RenderCtx) -> Rendered {
         pending_anchor = Some(b.body_idx());
         match b {
             Block::Para(p) => {
-                let mode = Mode { heading: matches!(p.kind, Kind::Heading(_)), code: p.kind == Kind::Code, table: false };
+                let mode = Mode { heading: matches!(p.kind, Kind::Heading(_)), code: p.kind == Kind::Code, ..Default::default() };
                 let Some(text) = inline(p, mode, cx) else { continue };
                 if p.kind == Kind::Code {
                     // A code paragraph with line breaks gets a fence of its own
@@ -153,10 +162,10 @@ pub fn render(blocks: &[Block], cx: &RenderCtx) -> Rendered {
                 sep(&mut out, false);
                 list_stack.clear();
                 prev_list = false;
-                if t.simple {
-                    out.push_str(&pipe_table(t, cx));
-                } else {
-                    out.push_str(&grid_table(t, cx));
+                match t.kind {
+                    TableKind::Simple => out.push_str(&pipe_table(t, cx)),
+                    TableKind::Grid => out.push_str(&html_table(t, cx)),
+                    TableKind::Opaque => out.push_str(&grid_table(t, cx)),
                 }
                 map.push(bi);
             }
@@ -260,8 +269,37 @@ fn pipe_table(t: &Table, cx: &RenderCtx) -> String {
     s
 }
 
+/// A table with merged cells, as HTML: one cell per line, cell content in
+/// docex Markdown, `<br>` between paragraphs. It must not contain blank lines
+/// (they would end the HTML block).
+fn html_table(t: &Table, cx: &RenderCtx) -> String {
+    let mode = Mode { table: true, html: true, ..Default::default() };
+    let mut s = String::from("<table>\n");
+    for (ri, anchors) in t.anchors().iter().enumerate() {
+        s.push_str("<tr>\n");
+        for a in anchors {
+            let cell = &t.rows[ri].cells[a.cell];
+            let text = cell.paras.iter().map(|p| inline(p, mode, cx).unwrap_or_default()).collect::<Vec<_>>().join("<br>");
+            s.push_str("<td");
+            if a.colspan > 1 {
+                s.push_str(&format!(" colspan=\"{}\"", a.colspan));
+            }
+            if a.rowspan > 1 {
+                s.push_str(&format!(" rowspan=\"{}\"", a.rowspan));
+            }
+            s.push('>');
+            s.push_str(&text);
+            s.push_str("</td>\n");
+        }
+        s.push_str("</tr>\n");
+    }
+    s.push_str("</table>");
+    s
+}
+
+/// A table docex can't edit, as a read-only block.
 fn grid_table(t: &Table, cx: &RenderCtx) -> String {
-    let mut s = format!("````docex-table b{} (merged cells: read-only)\n", t.idx);
+    let mut s = format!("````docex-table b{} (read-only)\n", t.idx);
     for row in &t.rows {
         let cells: Vec<String> = row
             .cells
@@ -545,7 +583,7 @@ impl Writer {
         }
         let fence = "`".repeat(longest + 1);
         let pad = s.starts_with('`') || s.ends_with('`') || (s.starts_with(' ') && s.ends_with(' '));
-        let body = if self.mode.table { s.replace('|', "\\|") } else { s.to_string() };
+        let body = if self.mode.pipes() { s.replace('|', "\\|") } else { s.to_string() };
         self.out.push_str(&fence);
         if pad {
             self.out.push(' ');
@@ -605,10 +643,10 @@ impl Writer {
         } else if let Some(t) = k.strip_prefix("img:") {
             self.out.push_str(&format!("![{}]({})", escape_plain(alt), link_dest(t)));
         } else if let Some(l) = k.strip_prefix("mathd:") {
-            let l = if self.mode.table { l.replace('|', "\\|") } else { l.to_string() };
+            let l = if self.mode.pipes() { l.replace('|', "\\|") } else { l.to_string() };
             self.out.push_str(&format!("$${l}$$"));
         } else if let Some(l) = k.strip_prefix("math:") {
-            let l = if self.mode.table { l.replace('|', "\\|") } else { l.to_string() };
+            let l = if self.mode.pipes() { l.replace('|', "\\|") } else { l.to_string() };
             self.out.push_str(&format!("${l}$"));
         } else if let Some(n) = k.strip_prefix("fn:") {
             self.out.push_str(&format!("[^{n}]"));
@@ -636,7 +674,7 @@ fn escape_char(c: char, prev: Option<char>, next: Option<char>, line_start: bool
         '&' => next.is_some_and(|n| n.is_alphanumeric() || n == '#'),
         '{' => next.is_some_and(|n| "+-~=>".contains(n)),
         '}' => prev.is_some_and(|p| "+-~=<".contains(p)),
-        '|' => mode.table,
+        '|' => mode.pipes(),
         '#' => line_start || mode.heading,
         '>' | '-' | '+' | '=' | ':' => line_start,
         '!' => next == Some('['),

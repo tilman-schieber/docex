@@ -605,7 +605,7 @@ fn blocks_json(doc: &Docx, view: View) -> serde_json::Value {
                     .iter()
                     .map(|r| r.cells.iter().map(|c| c.paras.iter().map(|p| view_text(p, view)).collect::<Vec<_>>().join("\n")).collect())
                     .collect();
-                out.push(serde_json::json!({ "id": format!("b{}", t.idx), "type": "table", "editable": t.simple, "rows": rows }));
+                out.push(serde_json::json!({ "id": format!("b{}", t.idx), "type": "table", "editable": t.editable(), "rows": rows }));
             }
             Block::Opaque { idx, label } => {
                 out.push(serde_json::json!({ "id": format!("b{idx}"), "type": "opaque", "label": label }));

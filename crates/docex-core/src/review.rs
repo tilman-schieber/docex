@@ -201,7 +201,7 @@ pub fn build(model: &DocModel, changes: &[Change], comments: &[Comment]) -> Revi
     for (bi, b) in model.blocks.iter().enumerate() {
         match b {
             MBlock::Para(p) => add(p, &mut path, "body", &mut paras),
-            MBlock::Table { rows } => {
+            MBlock::Table { rows, .. } => {
                 for p in rows.iter().flatten().flatten() {
                     add(p, &mut path, "body", &mut paras);
                 }
@@ -289,8 +289,21 @@ pub fn build(model: &DocModel, changes: &[Change], comments: &[Comment]) -> Revi
             it.order = (f.para, f.start);
             it.before = context(f.para, f.start, f.end).0;
             it.after = context(l.para, l.start, l.end).1;
-            let ins: String = rs.iter().filter(|r| r.st == Status::Ins).map(|r| r.text.as_str()).collect();
-            let del: String = rs.iter().filter(|r| r.st == Status::Del).map(|r| r.text.as_str()).collect();
+            // A table row's cells read "a | b | c".
+            let row = matches!(c.kind, ChangeKind::RowInsert | ChangeKind::RowDelete);
+            let join = |st: Status| {
+                let mut s = String::new();
+                let mut last = None;
+                for r in rs.iter().filter(|r| r.st == st) {
+                    if row && last.is_some_and(|p| p != r.para) {
+                        s.push_str(" | ");
+                    }
+                    s.push_str(&r.text);
+                    last = Some(r.para);
+                }
+                s
+            };
+            let (ins, del) = (join(Status::Ins), join(Status::Del));
             it.new = Some(ins).filter(|s| !s.is_empty());
             it.old = Some(del).filter(|s| !s.is_empty());
             if it.new.is_some() && it.old.is_some() {

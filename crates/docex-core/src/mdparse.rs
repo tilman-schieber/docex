@@ -29,11 +29,34 @@ pub struct EPara {
     pub comments: Vec<EComment>,
 }
 
+/// A visible table cell: its paragraphs and how many columns / rows it spans.
+#[derive(Clone, Debug)]
+pub struct ECell {
+    pub paras: Vec<EPara>,
+    pub colspan: usize,
+    pub rowspan: usize,
+}
+
+impl ECell {
+    pub fn new(paras: Vec<EPara>) -> ECell {
+        ECell { paras, colspan: 1, rowspan: 1 }
+    }
+}
+
+/// Rows of visible cells, as in HTML: a cell spanning several rows is listed
+/// only in its first row.
+pub type ETable = Vec<Vec<ECell>>;
+
+/// Whether a table needs HTML: merged cells or rows of different lengths.
+pub fn is_grid(t: &ETable) -> bool {
+    let n = t.first().map(|r| r.len()).unwrap_or(0);
+    t.iter().any(|r| r.len() != n || r.iter().any(|c| c.colspan != 1 || c.rowspan != 1))
+}
+
 #[derive(Clone, Debug)]
 pub enum EBlock {
     Para(EPara),
-    /// rows -> cells -> paragraphs
-    Table(Vec<Vec<Vec<EPara>>>),
+    Table(ETable),
     Opaque(usize),
 }
 
@@ -57,7 +80,10 @@ impl EBlock {
                     s.push('\u{1}');
                     for c in r {
                         s.push('\u{2}');
-                        for p in c {
+                        if c.colspan != 1 || c.rowspan != 1 {
+                            s.push_str(&format!("{}x{}", c.colspan, c.rowspan));
+                        }
+                        for p in &c.paras {
                             s.push('\u{3}');
                             s.push_str(&atoms_key(&p.atoms));
                         }
@@ -75,7 +101,7 @@ impl EBlock {
             EBlock::Para(p) => p.text(),
             EBlock::Table(rows) => rows
                 .iter()
-                .flat_map(|r| r.iter().flat_map(|c| c.iter().map(|p| p.text())))
+                .flat_map(|r| r.iter().flat_map(|c| c.paras.iter().map(|p| p.text())))
                 .collect::<Vec<_>>()
                 .join(" "),
             EBlock::Opaque(n) => format!("\u{0}opaque{n}"),
@@ -315,8 +341,8 @@ struct P {
     /// Text box sections: id -> paragraphs.
     boxes: Vec<(String, Vec<EPara>)>,
     in_box: bool,
-    table: Option<Vec<Vec<Vec<EPara>>>>,
-    row: Option<Vec<Vec<EPara>>>,
+    table: Option<ETable>,
+    row: Option<Vec<ECell>>,
     cell: Option<Vec<EPara>>,
 }
 
@@ -497,6 +523,83 @@ fn trim(p: &mut EPara) {
     }
 }
 
+/// An HTML table (`<table>`, `<tr>`, `<td>`/`<th>` with colspan and rowspan).
+/// Cell content is docex Markdown on one line; `<br>` separates paragraphs.
+fn html_table(src: &str) -> Option<ETable> {
+    let lower = src.to_ascii_lowercase();
+    if !lower.trim_start().starts_with("<table") {
+        return None;
+    }
+    let mut rows: ETable = Vec::new();
+    let mut i = 0;
+    while let Some(k) = lower[i..].find('<') {
+        let at = i + k;
+        let close = at + lower[at..].find('>')? + 1;
+        let tag = &lower[at..close];
+        if tag.starts_with("<tr") && !tag.starts_with("<track") {
+            rows.push(Vec::new());
+            i = close;
+        } else if tag.starts_with("<td") || tag.starts_with("<th") {
+            let end_tag = if tag.starts_with("<td") { "</td>" } else { "</th>" };
+            // Text never holds a raw `</td>`: docex writes `<` as `\<`.
+            let mut end = close;
+            loop {
+                end += lower[end..].find(end_tag)?;
+                if !lower[..end].ends_with('\\') {
+                    break;
+                }
+                end += 1;
+            }
+            let attr = |name: &str| -> usize {
+                tag.find(&format!("{name}="))
+                    .map(|p| tag[p + name.len() + 1..].trim_start_matches(['"', '\'']).chars().take_while(char::is_ascii_digit).collect::<String>())
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(1)
+                    .max(1)
+            };
+            if rows.is_empty() {
+                rows.push(Vec::new());
+            }
+            let paras = split_br(&src[close..end]).into_iter().map(|part| inline_para(part.trim())).collect();
+            rows.last_mut().unwrap().push(ECell { paras, colspan: attr("colspan"), rowspan: attr("rowspan") });
+            i = end + end_tag.len();
+        } else {
+            i = close;
+        }
+    }
+    Some(rows)
+}
+
+/// Split a cell at paragraph breaks (`<br>`, not the line break `<br/>`).
+fn split_br(s: &str) -> Vec<&str> {
+    let lower = s.to_ascii_lowercase();
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(k) = lower[from..].find("<br>") {
+        out.push(&s[from..from + k]);
+        from += k + 4;
+    }
+    out.push(&s[from..]);
+    out
+}
+
+/// One paragraph of inline Markdown.
+fn inline_para(s: &str) -> EPara {
+    if s.is_empty() {
+        return new_para(Kind::Normal);
+    }
+    // A leading "x" keeps the text from being read as a block (heading, list, HTML).
+    let inner = parse(&format!("x{s}"));
+    let Some(EBlock::Para(mut p)) = inner.into_iter().next() else { return new_para(Kind::Normal) };
+    p.atoms.remove(0);
+    for c in &mut p.comments {
+        c.start = c.start.saturating_sub(1);
+        c.end = c.end.saturating_sub(1);
+    }
+    p.kind = Kind::Normal;
+    p
+}
+
 fn opaque_id(s: &str, prefix: &str) -> Option<usize> {
     let i = s.find(prefix)? + prefix.len();
     let digits: String = s[i..].chars().take_while(|c| c.is_ascii_digit()).collect();
@@ -595,6 +698,9 @@ pub fn parse_full(src: &str) -> Parsed {
                         p.in_box = true;
                     } else if let Some(n) = opaque_id(&buf, "docex:opaque b") {
                         p.blocks.push(EBlock::Opaque(n));
+                    } else if let Some(t) = html_table(&buf) {
+                        p.close_para();
+                        p.blocks.push(EBlock::Table(t));
                     } else if buf.contains("<!--docex:") {
                         // A paragraph that merely starts with an inline object
                         // (`<!--docex:shape-->`): read it as inline text.
@@ -703,7 +809,7 @@ pub fn parse_full(src: &str) -> Parsed {
                         trim(para);
                     }
                     if let Some(r) = &mut p.row {
-                        r.push(cell);
+                        r.push(ECell::new(cell));
                     }
                 }
                 TagEnd::TableHead | TagEnd::TableRow => {
@@ -795,7 +901,7 @@ mod tests {
             .iter()
             .map(|b| match b {
                 EBlock::Para(p) => format!("{:?}", p.kind),
-                EBlock::Table(r) => format!("T{}x{}:{}", r.len(), r[1].len(), r[1][0].len()),
+                EBlock::Table(r) => format!("T{}x{}:{}", r.len(), r[1].len(), r[1][0].paras.len()),
                 EBlock::Opaque(n) => format!("O{n}"),
             })
             .collect();

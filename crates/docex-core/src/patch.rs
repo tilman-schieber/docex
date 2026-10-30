@@ -2,8 +2,8 @@
 //! into surgical XML changes, as tracked revisions by default.
 
 use crate::comments::text_el;
-use crate::mdparse::{atoms_key, EAtom, EBlock, EComment, EPara};
-use crate::model::{marks_of, Block, Marks, Para, Status, Table, What, WrapKind};
+use crate::mdparse::{atoms_key, EAtom, EBlock, ECell, EComment, EPara, ETable};
+use crate::model::{marks_of, Block, Marks, Para, Status, Table, VMerge, What, WrapKind};
 use crate::package::Rels;
 use crate::styles::{Kind, Styles};
 use crate::xml::{Document, Element, Node};
@@ -31,6 +31,12 @@ pub const RPR_ORDER: &[&str] = &[
 const TRPR_ORDER: &[&str] = &[
     "w:cnfStyle", "w:divId", "w:gridBefore", "w:gridAfter", "w:wBefore", "w:wAfter", "w:cantSplit",
     "w:trHeight", "w:tblHeader", "w:tblCellSpacing", "w:jc", "w:hidden", "w:ins", "w:del", "w:trPrChange",
+];
+
+const TCPR_ORDER: &[&str] = &[
+    "w:cnfStyle", "w:tcW", "w:gridSpan", "w:hMerge", "w:vMerge", "w:tcBorders", "w:shd", "w:noWrap",
+    "w:tcMar", "w:textDirection", "w:tcFitText", "w:vAlign", "w:hideMark", "w:headers", "w:cellIns",
+    "w:cellDel", "w:cellMerge", "w:tcPrChange",
 ];
 
 const REL_HYPERLINK: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
@@ -1581,7 +1587,12 @@ pub fn patch_paras(container: &Element, paras: &[Para], orig: &[EPara], new: &[E
     if ok == nk && o_cm == n_cm {
         return None;
     }
-    let ops = align(&ok, &nk, |i, j| similarity(&orig[i].text(), &new[j].text()));
+    // A single paragraph stays one paragraph, however much its text changed.
+    let ops = if orig.len() == 1 && new.len() == 1 {
+        vec![if ok[0] == nk[0] { Align::Keep(0, 0) } else { Align::Modify(0, 0) }]
+    } else {
+        align(&ok, &nk, |i, j| similarity(&orig[i].text(), &new[j].text()))
+    };
     let at = |p: &Para| *p.path.last().unwrap();
     let mut sp = Splice::default();
     let mut anchor: Option<usize> = None;
@@ -1829,9 +1840,488 @@ fn patch_row(t: &Table, tbl: &Element, i: usize, j: usize, orig: &[Vec<Vec<EPara
     }
 }
 
-/// A brand-new table from Markdown rows.
-pub fn new_table(rows: &[Vec<Vec<EPara>>], cx: &mut PatchCtx) -> Node {
-    let ncols = rows.iter().map(|r| r.len()).max().unwrap_or(1).max(1);
+// ---------------------------------------------------------------------------
+// Tables with merged cells
+
+/// A cell placed on the table grid (HTML table layout).
+#[derive(Clone, Copy, Debug)]
+struct Placed {
+    row: usize,
+    col: usize,
+    colspan: usize,
+    rowspan: usize,
+    /// Index in its row's cell list; `None` fills a hole in a short row.
+    cell: Option<usize>,
+}
+
+/// Lay out rows of cells like HTML: each cell takes the next free column,
+/// row spans stop at the last row, holes in short rows get empty cells.
+/// Returns the placed cells of each row (by column) and the column count.
+fn layout(t: &ETable) -> (Vec<Vec<Placed>>, usize) {
+    let nrows = t.len();
+    let mut occ: Vec<Vec<bool>> = vec![Vec::new(); nrows];
+    let mut rows: Vec<Vec<Placed>> = vec![Vec::new(); nrows];
+    for (r, row) in t.iter().enumerate() {
+        let mut col = 0;
+        for (k, c) in row.iter().enumerate() {
+            while occ[r].get(col).copied().unwrap_or(false) {
+                col += 1;
+            }
+            let rowspan = c.rowspan.max(1).min(nrows - r);
+            let colspan = c.colspan.max(1);
+            for o in occ.iter_mut().skip(r).take(rowspan) {
+                if o.len() < col + colspan {
+                    o.resize(col + colspan, false);
+                }
+                o[col..col + colspan].iter_mut().for_each(|x| *x = true);
+            }
+            rows[r].push(Placed { row: r, col, colspan, rowspan, cell: Some(k) });
+            col += colspan;
+        }
+    }
+    let width = occ.iter().map(|o| o.len()).max().unwrap_or(0).max(1);
+    for (r, o) in occ.iter().enumerate() {
+        for c in 0..width {
+            if !o.get(c).copied().unwrap_or(false) {
+                rows[r].push(Placed { row: r, col: c, colspan: 1, rowspan: 1, cell: None });
+            }
+        }
+        rows[r].sort_by_key(|p| p.col);
+    }
+    (rows, width)
+}
+
+/// What a row of the grid holds at each column: the start of a cell, or the
+/// continuation of a cell from a row above (a vertical merge).
+enum Slot {
+    Start(Placed),
+    Cont(Placed),
+}
+
+fn slots(placed: &[Vec<Placed>]) -> Vec<Vec<Slot>> {
+    let mut out: Vec<Vec<Slot>> = placed.iter().map(|r| r.iter().map(|p| Slot::Start(*p)).collect()).collect();
+    for row in placed {
+        for p in row.iter().filter(|p| p.rowspan > 1) {
+            for r in p.row + 1..p.row + p.rowspan {
+                out[r].push(Slot::Cont(*p));
+            }
+        }
+    }
+    for r in &mut out {
+        r.sort_by_key(|s| match s {
+            Slot::Start(p) | Slot::Cont(p) => p.col,
+        });
+    }
+    out
+}
+
+/// Set a cell's span, vertical merge and (if given) width, leaving its
+/// properties untouched when they already match.
+fn set_tc_layout(tc: &mut Element, span: usize, vmerge: VMerge, width: Option<i64>) {
+    if tc.child("w:tcPr").is_none() {
+        tc.children.insert(0, Element::new("w:tcPr").into());
+    }
+    let pr = tc.child_mut("w:tcPr").unwrap();
+    let cur_span: usize = pr.child("w:gridSpan").and_then(|g| g.attr("w:val")?.parse().ok()).unwrap_or(1);
+    if cur_span != span {
+        if span > 1 {
+            pr.insert_ordered(Element::new("w:gridSpan").with_attr("w:val", span.to_string()), TCPR_ORDER);
+        } else {
+            pr.remove_children("w:gridSpan");
+        }
+    }
+    let cur_v = match pr.child("w:vMerge") {
+        None => VMerge::None,
+        Some(v) if v.attr("w:val") == Some("restart") => VMerge::Restart,
+        Some(_) => VMerge::Continue,
+    };
+    if cur_v != vmerge {
+        match vmerge {
+            VMerge::None => pr.remove_children("w:vMerge"),
+            VMerge::Restart => pr.insert_ordered(Element::new("w:vMerge").with_attr("w:val", "restart"), TCPR_ORDER),
+            VMerge::Continue => pr.insert_ordered(Element::new("w:vMerge"), TCPR_ORDER),
+        }
+    }
+    pr.remove_children("w:hMerge");
+    if let Some(w) = width {
+        // Only fixed widths follow the grid; percentages and "auto" stay.
+        let fixed = pr.child("w:tcW").map(|e| matches!(e.attr("w:type"), None | Some("dxa"))).unwrap_or(true);
+        let same = pr.child("w:tcW").and_then(|e| e.attr("w:w")) == Some(w.to_string().as_str());
+        if fixed && !same {
+            pr.insert_ordered(Element::new("w:tcW").with_attr("w:w", w.to_string()).with_attr("w:type", "dxa"), TCPR_ORDER);
+        }
+    }
+    if pr.children.is_empty() {
+        tc.remove_children("w:tcPr");
+    }
+}
+
+/// Cell properties for a new cell copied from `tmpl`, without its layout and
+/// change tracking.
+fn tcpr_template(tmpl: Option<&Element>) -> Element {
+    let mut pr = tmpl.and_then(|tc| tc.child("w:tcPr")).cloned().unwrap_or_else(|| Element::new("w:tcPr"));
+    for n in ["w:gridSpan", "w:hMerge", "w:vMerge", "w:tcW", "w:cellIns", "w:cellDel", "w:cellMerge", "w:tcPrChange"] {
+        pr.remove_children(n);
+    }
+    pr
+}
+
+fn new_tc(pr: Element, paras: &[EPara], tmpl: Option<&Para>, cx: &mut PatchCtx) -> Element {
+    let mut tc = Element::new("w:tc");
+    if !pr.children.is_empty() || !pr.attrs().is_empty() {
+        tc.children.push(pr.into());
+    }
+    let (ppr, rpr) = para_template(tmpl);
+    let empty = empty_cell();
+    let paras = if paras.is_empty() { &empty[..] } else { paras };
+    for p in paras {
+        tc.children.push(new_cell_para(p, ppr.clone(), rpr.clone(), cx));
+    }
+    tc
+}
+
+/// The covered part of a vertical merge: same properties as its first cell,
+/// one empty paragraph.
+fn cont_tc(start: &Element) -> Element {
+    let mut tc = Element::new("w:tc");
+    if let Some(pr) = start.child("w:tcPr") {
+        tc.children.push(pr.clone().into());
+    }
+    let mut p = Element::new("w:p");
+    if let Some(ppr) = start.child("w:p").and_then(|sp| sp.child("w:pPr")) {
+        let mut ppr = ppr.clone();
+        ppr.remove_children("w:pPrChange");
+        ppr.remove_children("w:rPr");
+        if !ppr.children.is_empty() {
+            p.children.push(ppr.into());
+        }
+    }
+    tc.children.push(p.into());
+    tc
+}
+
+fn grid_widths(tbl: &Element) -> Vec<i64> {
+    tbl.child("w:tblGrid")
+        .map(|g| g.elements().filter(|e| e.is("w:gridCol")).map(|e| e.attr("w:w").and_then(|w| w.parse().ok()).unwrap_or(0)).collect())
+        .unwrap_or_default()
+}
+
+fn cell_key(c: &ECell) -> String {
+    c.paras.iter().map(|p| atoms_key(&p.atoms)).collect::<Vec<_>>().join("\u{3}")
+}
+
+fn cell_text(c: &ECell) -> String {
+    c.paras.iter().map(|p| p.text()).collect::<Vec<_>>().join(" ")
+}
+
+/// How alike two cells are. A cell holding the other's text as one of its
+/// paragraphs (cells merged into it) counts as the same cell, the first
+/// paragraph most.
+fn cell_sim(o: &ECell, n: &ECell) -> f32 {
+    let t = cell_text(o);
+    if !t.is_empty() && n.paras.len() > 1 {
+        if let Some(k) = n.paras.iter().position(|p| p.text() == t) {
+            return 1.0 - 0.05 * k as f32;
+        }
+    }
+    similarity(&t, &cell_text(n))
+}
+
+fn has_comments(c: &ECell) -> bool {
+    c.paras.iter().any(|p| !p.comments.is_empty())
+}
+
+/// Patch a table that has (or gets) merged cells. With the same layout only
+/// the text changes; otherwise rows and cells are rebuilt from the new
+/// layout, reusing each kept cell and its properties.
+pub fn patch_grid(t: &Table, tbl: &Element, orig: &ETable, new: &ETable, cx: &mut PatchCtx) -> Option<Element> {
+    let anchors = t.anchors();
+    if orig.len() != t.rows.len() || orig.iter().zip(&anchors).any(|(o, a)| o.len() != a.len()) {
+        cx.warnings.push(format!("table b{}: layout mismatch, left unchanged", t.idx));
+        return None;
+    }
+    let tr_of = |i: usize| match &tbl.children[t.rows[i].child_idx] {
+        Node::Element(e) => Some(e),
+        _ => None,
+    };
+    let tc_of = |i: usize, cell: usize| match tr_of(i).map(|tr| &tr.children[t.rows[i].cell_idx[cell]]) {
+        Some(Node::Element(e)) => Some(e),
+        _ => None,
+    };
+    let (placed, width) = layout(new);
+    let place = |j: usize, b: usize| *placed[j].iter().find(|p| p.cell == Some(b)).unwrap();
+    let same_layout = orig.len() == new.len()
+        && width == t.cols
+        && placed.iter().zip(&anchors).all(|(p, a)| {
+            p.len() == a.len() && p.iter().zip(a).all(|(p, a)| p.cell.is_some() && p.col == a.col && p.colspan == a.colspan && p.rowspan == a.rowspan)
+        });
+    if same_layout {
+        let mut out = tbl.clone();
+        let mut changed = false;
+        for (i, row) in t.rows.iter().enumerate() {
+            let Some(tr) = tr_of(i) else { continue };
+            let mut tr = tr.clone();
+            let mut row_changed = false;
+            for (k, a) in anchors[i].iter().enumerate() {
+                let (o, n) = (&orig[i][k], &new[i][k]);
+                if cell_key(o) == cell_key(n) && !has_comments(n) {
+                    continue;
+                }
+                let Some(tc) = tc_of(i, a.cell) else { continue };
+                if let Some(ntc) = patch_paras(tc, &row.cells[a.cell].paras, &o.paras, &n.paras, cx) {
+                    tr.children[row.cell_idx[a.cell]] = ntc.into();
+                    row_changed = true;
+                }
+            }
+            if row_changed {
+                out.children[row.child_idx] = tr.into();
+                changed = true;
+            }
+        }
+        return changed.then_some(out);
+    }
+
+    // 1. Pair rows, then the cells of paired rows.
+    let row_key = |r: &[ECell]| r.iter().map(|c| format!("{}x{}{}", c.colspan, c.rowspan, cell_key(c))).collect::<Vec<_>>().join("\u{2}");
+    let row_text = |r: &[ECell]| r.iter().map(cell_text).collect::<Vec<_>>().join(" ");
+    let ok: Vec<String> = orig.iter().map(|r| row_key(r)).collect();
+    let nk: Vec<String> = new.iter().map(|r| row_key(r)).collect();
+    let row_ops = align(&ok, &nk, |i, j| similarity(&row_text(&orig[i]), &row_text(&new[j])));
+    let mut old_row: Vec<Option<usize>> = vec![None; new.len()];
+    // (new row, new cell) -> (old row, old cell)
+    let mut pair: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
+    let mut structural = width != t.cols;
+    for op in &row_ops {
+        let (Align::Keep(i, j) | Align::Modify(i, j)) = *op else { continue };
+        old_row[j] = Some(i);
+        let ck_o: Vec<String> = orig[i].iter().map(cell_key).collect();
+        let ck_n: Vec<String> = new[j].iter().map(cell_key).collect();
+        let mut used_o = vec![false; orig[i].len()];
+        let mut used_n = vec![false; new[j].len()];
+        for c in align(&ck_o, &ck_n, |a, b| cell_sim(&orig[i][a], &new[j][b])) {
+            if let Align::Keep(a, b) | Align::Modify(a, b) = c {
+                pair.insert((j, b), (i, a));
+                used_o[a] = true;
+                used_n[b] = true;
+            }
+        }
+        // A cell whose text changed beyond recognition keeps its place (an
+        // empty new cell is more likely a new column).
+        for b in 0..new[j].len() {
+            if used_n[b] || cell_text(&new[j][b]).is_empty() {
+                continue;
+            }
+            let col = place(j, b).col;
+            if let Some(a) = (0..orig[i].len()).find(|&a| !used_o[a] && anchors[i][a].col == col) {
+                pair.insert((j, b), (i, a));
+                used_o[a] = true;
+                used_n[b] = true;
+            }
+        }
+        if used_o.contains(&false) || used_n.contains(&false) {
+            structural = true;
+        }
+        for b in 0..new[j].len() {
+            if let Some(&(_, a)) = pair.get(&(j, b)) {
+                let (o, p) = (anchors[i][a], place(j, b));
+                if (o.colspan, o.rowspan) != (p.colspan, p.rowspan) {
+                    structural = true;
+                }
+            }
+        }
+    }
+    if structural && cx.opts.tracked {
+        cx.warnings.push(format!(
+            "table b{}: merged, split, added or removed cells are not recorded as tracked changes (Word has no tracked form for them); applied directly",
+            t.idx
+        ));
+    }
+
+    // 2. Column widths: keep the table's total, carry over the widths of
+    //    columns that kept their place.
+    let old_w = grid_widths(tbl);
+    let mut widths = old_w.clone();
+    if width != old_w.len() || width != t.cols {
+        let mut map: HashMap<usize, usize> = HashMap::new();
+        for (&(j, b), &(i, a)) in &pair {
+            let (o, p) = (anchors[i][a], place(j, b));
+            if o.colspan == 1 && p.colspan == 1 {
+                map.entry(p.col).or_insert(o.col);
+            }
+        }
+        let total: i64 = old_w.iter().sum::<i64>().max(1);
+        let avg = if old_w.is_empty() { 9000 / width as i64 } else { total / old_w.len() as i64 };
+        widths = (0..width).map(|c| map.get(&c).and_then(|o| old_w.get(*o)).copied().unwrap_or(avg)).collect();
+        let sum: i64 = widths.iter().sum::<i64>().max(1);
+        if !old_w.is_empty() {
+            widths = widths.iter().map(|w| w * total / sum).collect();
+        }
+    }
+    let span_w = |col: usize, span: usize| -> Option<i64> { (widths.len() >= col + span).then(|| widths[col..col + span].iter().sum()) };
+
+    // 3. Templates for new cells: a kept cell in the same column, else the first cell.
+    let first_tc = t.rows.first().and_then(|r| r.cells.first()).and_then(|_| tc_of(0, 0));
+    let first_para = t.rows.first().and_then(|r| r.cells.first()).and_then(|c| c.paras.first());
+    let mut col_tmpl: HashMap<usize, (&Element, Option<&Para>)> = HashMap::new();
+    for (&(j, b), &(i, a)) in &pair {
+        let (o, p) = (anchors[i][a], place(j, b));
+        if let (Some(tc), 1) = (tc_of(i, o.cell), p.colspan) {
+            col_tmpl.entry(p.col).or_insert((tc, t.rows[i].cells[o.cell].paras.first()));
+        }
+    }
+
+    // 4. Rebuild the rows.
+    let slots = slots(&placed);
+    let mut starts: HashMap<(usize, usize), Element> = HashMap::new();
+    let mut build_row = |j: usize, base: &Element, cx: &mut PatchCtx| -> Element {
+        let mut tcs: Vec<Node> = Vec::new();
+        for slot in &slots[j] {
+            match slot {
+                Slot::Start(p) => {
+                    let ncell = p.cell.map(|b| &new[j][b]);
+                    let kept = p.cell.and_then(|b| pair.get(&(j, b))).and_then(|&(i, a)| Some((i, a, tc_of(i, anchors[i][a].cell)?)));
+                    let mut tc = match (kept, ncell) {
+                        (Some((i, a, old)), Some(n)) => {
+                            let cell = &t.rows[i].cells[anchors[i][a].cell];
+                            patch_paras(old, &cell.paras, &orig[i][a].paras, &n.paras, cx).unwrap_or_else(|| old.clone())
+                        }
+                        _ => {
+                            let (tc, para) = col_tmpl.get(&p.col).map(|(e, p)| (Some(*e), *p)).unwrap_or((first_tc, first_para));
+                            let paras = ncell.map(|c| c.paras.clone()).unwrap_or_default();
+                            new_tc(tcpr_template(tc), &paras, para, cx)
+                        }
+                    };
+                    set_tc_layout(&mut tc, p.colspan, if p.rowspan > 1 { VMerge::Restart } else { VMerge::None }, span_w(p.col, p.colspan));
+                    if p.rowspan > 1 {
+                        starts.insert((p.row, p.col), tc.clone());
+                    }
+                    tcs.push(tc.into());
+                }
+                Slot::Cont(p) => {
+                    // Reuse the old covered cell if this row was already part of the same merge.
+                    let reuse = old_row[j].and_then(|i| {
+                        let &(i0, a) = pair.get(&(p.row, p.cell?))?;
+                        let o = anchors[i0][a];
+                        if !(i0 < i && i < i0 + o.rowspan) {
+                            return None;
+                        }
+                        let ci = t.rows[i].cells.iter().position(|c| c.col == o.col && c.vmerge == VMerge::Continue)?;
+                        tc_of(i, ci).cloned()
+                    });
+                    let mut tc = reuse.unwrap_or_else(|| cont_tc(starts.get(&(p.row, p.col)).unwrap_or(&Element::new("w:tc"))));
+                    set_tc_layout(&mut tc, p.colspan, VMerge::Continue, span_w(p.col, p.colspan));
+                    tcs.push(tc.into());
+                }
+            }
+        }
+        // Keep the row's other children (properties, bookmarks) and put the
+        // cells where the old ones were.
+        let mut tr = base.shell();
+        let mut put = false;
+        for c in &base.children {
+            match c {
+                Node::Element(e) if e.is("w:tc") => {
+                    if !put {
+                        tr.children.append(&mut tcs);
+                        put = true;
+                    }
+                }
+                _ => tr.children.push(c.clone()),
+            }
+        }
+        tr.children.append(&mut tcs);
+        tr
+    };
+
+    let mut sp = Splice::default();
+    let mut anchor_row: Option<usize> = None;
+    let mut front = Vec::new();
+    for op in &row_ops {
+        match *op {
+            Align::Keep(i, j) | Align::Modify(i, j) => {
+                let Some(base) = tr_of(i) else { continue };
+                let tr = build_row(j, base, cx);
+                if tr.to_xml() != base.to_xml() {
+                    sp.replace.insert(t.rows[i].child_idx, vec![tr.into()]);
+                }
+                anchor_row = Some(i);
+            }
+            Align::Delete(i) => {
+                let row = &t.rows[i];
+                if cx.opts.tracked {
+                    let Some(tr) = tr_of(i) else { continue };
+                    let mut wrap = Element::new("x").with_child(tr.clone());
+                    mark_deleted(&mut wrap, cx);
+                    sp.replace.insert(row.child_idx, wrap.children);
+                } else {
+                    sp.replace.insert(row.child_idx, Vec::new());
+                }
+                anchor_row = Some(i);
+            }
+            Align::Insert(j) => {
+                let Some(tmpl) = tr_of(anchor_row.unwrap_or(0)) else { continue };
+                let mut base = tmpl.shell();
+                for c in &tmpl.children {
+                    match c {
+                        Node::Element(e) if e.is("w:trPr") => {
+                            let mut trpr = e.clone();
+                            for n in ["w:ins", "w:del", "w:trPrChange", "w:tblHeader"] {
+                                trpr.remove_children(n);
+                            }
+                            if cx.opts.tracked {
+                                let ins = cx.change_el("w:ins");
+                                trpr.insert_ordered(ins, TRPR_ORDER);
+                            }
+                            base.children.push(trpr.into());
+                        }
+                        Node::Element(e) if e.is("w:tblPrEx") => base.children.push(c.clone()),
+                        _ => {}
+                    }
+                }
+                if cx.opts.tracked && base.child("w:trPr").is_none() {
+                    let ins = cx.change_el("w:ins");
+                    base.children.insert(0, Element::new("w:trPr").with_child(ins).into());
+                }
+                let tr = build_row(j, &base, cx);
+                match anchor_row {
+                    Some(a) => sp.after.entry(t.rows[a].child_idx).or_default().push(tr.into()),
+                    None => front.push(tr.into()),
+                }
+            }
+        }
+    }
+    if !front.is_empty() {
+        if let Some(r) = t.rows.first() {
+            sp.before.insert(r.child_idx, front);
+        }
+    }
+    if sp.is_empty() && widths == old_w {
+        return None;
+    }
+    let mut out = tbl.clone();
+    sp.apply(&mut out.children);
+    if widths != old_w {
+        let mut grid = out.child("w:tblGrid").map(|g| g.shell()).unwrap_or_else(|| Element::new("w:tblGrid"));
+        for w in &widths {
+            grid.children.push(Element::new("w:gridCol").with_attr("w:w", w.to_string()).into());
+        }
+        if let Some(change) = out.child("w:tblGrid").and_then(|g| g.child("w:tblGridChange")) {
+            grid.children.push(change.clone().into());
+        }
+        match out.children.iter().position(|c| matches!(c, Node::Element(e) if e.is("w:tblGrid"))) {
+            Some(k) => out.children[k] = grid.into(),
+            None => {
+                let k = out.children.iter().position(|c| matches!(c, Node::Element(e) if e.is("w:tblPr"))).map(|k| k + 1).unwrap_or(0);
+                out.children.insert(k, grid.into());
+            }
+        }
+    }
+    Some(out)
+}
+
+/// A brand-new table (from Markdown or the editor); merged cells allowed.
+pub fn new_table(rows: &ETable, cx: &mut PatchCtx) -> Node {
+    let (placed, ncols) = layout(rows);
     let style = cx.styles.by_id.values().find(|s| s.name == "table grid").map(|s| s.id.clone());
     let mut tblpr = Element::new("w:tblPr");
     match style {
@@ -1857,11 +2347,13 @@ pub fn new_table(rows: &[Vec<Vec<EPara>>], cx: &mut PatchCtx) -> Node {
     }
     let mut tbl = Element::new("w:tbl").with_child(tblpr);
     let mut grid = Element::new("w:tblGrid");
-    let w = 9000 / ncols;
+    let w = 9000 / ncols as i64;
     for _ in 0..ncols {
         grid.children.push(Element::new("w:gridCol").with_attr("w:w", w.to_string()).into());
     }
     tbl.children.push(grid.into());
+    let slots = slots(&placed);
+    let mut starts: HashMap<(usize, usize), Element> = HashMap::new();
     for (ri, r) in rows.iter().enumerate() {
         let mut tr = Element::new("w:tr");
         if ri == 0 || cx.opts.tracked {
@@ -1875,21 +2367,28 @@ pub fn new_table(rows: &[Vec<Vec<EPara>>], cx: &mut PatchCtx) -> Node {
             }
             tr.children.push(trpr.into());
         }
-        for ci in 0..ncols {
-            let mut tc = Element::new("w:tc").with_child(
-                Element::new("w:tcPr").with_child(Element::new("w:tcW").with_attr("w:w", w.to_string()).with_attr("w:type", "dxa")),
-            );
-            let empty = vec![EPara { kind: Kind::Normal, atoms: Vec::new(), comments: Vec::new() }];
-            let paras = r.get(ci).filter(|c| !c.is_empty()).unwrap_or(&empty);
-            for p in paras {
-                let mut p = p.clone();
-                if ri == 0 {
-                    for a in &mut p.atoms {
-                        a.marks.bold = true;
+        for slot in &slots[ri] {
+            let tc = match slot {
+                Slot::Start(p) => {
+                    let mut paras = p.cell.and_then(|k| r.get(k)).map(|c| c.paras.clone()).unwrap_or_default();
+                    if ri == 0 {
+                        for a in paras.iter_mut().flat_map(|p| p.atoms.iter_mut()) {
+                            a.marks.bold = true;
+                        }
                     }
+                    let mut tc = new_tc(Element::new("w:tcPr"), &paras, None, cx);
+                    set_tc_layout(&mut tc, p.colspan, if p.rowspan > 1 { VMerge::Restart } else { VMerge::None }, Some(w * p.colspan as i64));
+                    if p.rowspan > 1 {
+                        starts.insert((p.row, p.col), tc.clone());
+                    }
+                    tc
                 }
-                tc.children.push(new_cell_para(&p, None, None, cx));
-            }
+                Slot::Cont(p) => {
+                    let mut tc = cont_tc(starts.get(&(p.row, p.col)).unwrap_or(&Element::new("w:tc")));
+                    set_tc_layout(&mut tc, p.colspan, VMerge::Continue, Some(w * p.colspan as i64));
+                    tc
+                }
+            };
             tr.children.push(tc.into());
         }
         tbl.children.push(tr.into());

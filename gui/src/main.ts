@@ -11,11 +11,26 @@ import { history, redo, undo } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
 import type { MarkType, Node as PMNode } from "prosemirror-model";
 import { type Command, EditorState, TextSelection, type Transaction } from "prosemirror-state";
-import { addRowAfter, deleteRow, goToNextCell, isInTable, tableEditing } from "prosemirror-tables";
+import {
+  addColumnAfter,
+  addColumnBefore,
+  addRowAfter,
+  addRowBefore,
+  deleteColumn,
+  deleteRow,
+  goToNextCell,
+  isInTable,
+  mergeCells,
+  splitCell,
+  tableEditing,
+} from "prosemirror-tables";
 import { EditorView } from "prosemirror-view";
 import {
   Asterisk,
   BetweenHorizontalEnd,
+  BetweenHorizontalStart,
+  BetweenVerticalEnd,
+  BetweenVerticalStart,
   Bold,
   ChevronDown,
   Code,
@@ -35,6 +50,8 @@ import {
   Sparkles,
   Command as CommandIcon,
   Table,
+  TableCellsMerge,
+  TableCellsSplit,
   Trash2,
   Undo2,
 } from "lucide";
@@ -701,13 +718,19 @@ const markButtons: [HTMLButtonElement, MarkType][] = [
 ];
 
 const saveBtn = tb(Save, "Save  Ctrl+S", () => saveFile(false));
-const tableCtx = h(
-  "span",
-  { class: "tb-ctx" },
-  sep(),
-  tb(BetweenHorizontalEnd, "Add a table row below", () => addRowAfter(view.state, view.dispatch)),
-  tb(Trash2, "Remove this table row", () => deleteRow(view.state, view.dispatch)),
-);
+/** Table commands, shown while the cursor is in a table; each is greyed out where it can't apply. */
+const TABLE_CMDS: [IconNode, string, Command, string?][] = [
+  [BetweenHorizontalStart, "Insert a row above", addRowBefore],
+  [BetweenHorizontalEnd, "Insert a row below", addRowAfter],
+  [BetweenVerticalStart, "Insert a column on the left", addColumnBefore],
+  [BetweenVerticalEnd, "Insert a column on the right", addColumnAfter],
+  [TableCellsMerge, "Merge the selected cells  (drag across cells to select them)", mergeCells],
+  [TableCellsSplit, "Split a merged cell", splitCell],
+  [Trash2, "Delete this row", deleteRow, "row"],
+  [Trash2, "Delete this column", deleteColumn, "col"],
+];
+const tableButtons = TABLE_CMDS.map(([ic, tip, cmd, label]) => [tb(ic, tip, () => cmd(view.state, view.dispatch), label), cmd] as const);
+const tableCtx = h("span", { class: "tb-ctx" }, sep(), ...tableButtons.map(([b]) => b));
 
 const trackSwitch = h("button", { class: "track-switch", onclick: () => void toggleTrack() }, h("span", { class: "knob" }), h("span", { class: "lbl" }, "Track changes"));
 trackSwitch.dataset.tip = "Track Changes: record your edits as suggestions others can accept or reject\n(Word's setting, saved in the document)";
@@ -799,7 +822,9 @@ function updateToolbar() {
     const active = empty ? !!m.isInSet(view.state.storedMarks || $from.marks()) : view.state.doc.rangeHasMark(from, to, m);
     b.classList.toggle("active", active);
   }
-  tableCtx.classList.toggle("show", isInTable(view.state));
+  const inTable = isInTable(view.state);
+  tableCtx.classList.toggle("show", inTable);
+  if (inTable) for (const [b, cmd] of tableButtons) b.disabled = !cmd(view.state);
   trackSwitch.classList.toggle("on", tracking);
   saveBtn.querySelector(".dot")?.remove();
   if (isDirty()) saveBtn.append(h("span", { class: "dot" }));
@@ -866,6 +891,7 @@ function paletteEntries(): Entry[] {
     { label: "Toggle outline", group: "View", hint: "Ctrl+1", run: () => togglePanel("outline") },
     { label: "Toggle review panel", group: "View", hint: "Ctrl+2", run: () => togglePanel("sidebar") },
     { label: "Insert table", group: "Insert", run: insertTable },
+    ...TABLE_CMDS.map(([, tip, cmd]) => ({ label: `Table: ${tip.replace(/\s+\(.*\)$/, "").toLowerCase()}`, group: "Table", run: () => { cmd(view.state, view.dispatch); view.focus(); } })),
     { label: "Insert image…", group: "Insert", run: insertImage },
     { label: "Insert footnote", group: "Insert", run: insertFootnote },
     { label: "Insert formula", group: "Insert", run: () => insertMath() },

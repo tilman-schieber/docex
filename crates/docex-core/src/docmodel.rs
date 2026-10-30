@@ -5,7 +5,7 @@
 //! author, date and Word id of tracked changes and the ids of comments, for
 //! display and for accepting / rejecting.
 
-use crate::mdparse::{EAtom, EBlock, EComment, EPara, Parsed};
+use crate::mdparse::{EAtom, EBlock, ECell, EComment, EPara, ETable, Parsed};
 use crate::model::{Block, Marks, Para, Status, WrapKind, What};
 use crate::styles::Kind;
 use crate::xml::Node;
@@ -78,7 +78,14 @@ pub struct MPara {
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum MBlock {
     Para(MPara),
-    Table { rows: Vec<Vec<Vec<MPara>>> },
+    /// Rows of visible cells (a cell spanning rows is listed in its first
+    /// row only), each a list of paragraphs.
+    Table {
+        rows: Vec<Vec<Vec<MPara>>>,
+        /// `[colspan, rowspan]` of each cell, row by row; empty when no cell is merged.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        spans: Vec<Vec<[usize; 2]>>,
+    },
     /// Content docex does not edit (TOC, content control, complex table).
     Opaque {
         id: usize,
@@ -218,6 +225,13 @@ fn para_to_model(p: Option<&Para>, e: &EPara, known_comments: &HashSet<String>) 
     MPara { kind, level, spans, new_comments: Vec::new() }
 }
 
+fn spans_of(t: &ETable) -> Vec<Vec<[usize; 2]>> {
+    if !t.iter().flatten().any(|c| c.colspan != 1 || c.rowspan != 1) {
+        return Vec::new();
+    }
+    t.iter().map(|r| r.iter().map(|c| [c.colspan, c.rowspan]).collect()).collect()
+}
+
 /// A model for Markdown text (e.g. pasted), not tied to a document.
 pub fn from_markdown(md: &str) -> DocModel {
     let parsed = crate::mdparse::parse_full(md);
@@ -227,7 +241,8 @@ pub fn from_markdown(md: &str) -> DocModel {
         out.blocks.push(match b {
             EBlock::Para(e) => MBlock::Para(para_to_model(None, e, &none)),
             EBlock::Table(rows) => MBlock::Table {
-                rows: rows.iter().map(|r| r.iter().map(|c| c.iter().map(|e| para_to_model(None, e, &none)).collect()).collect()).collect(),
+                rows: rows.iter().map(|r| r.iter().map(|c| c.paras.iter().map(|e| para_to_model(None, e, &none)).collect()).collect()).collect(),
+                spans: spans_of(rows),
             },
             EBlock::Opaque(_) => continue,
         });
@@ -251,32 +266,39 @@ pub fn export(
         let mb = match (eb, b) {
             (EBlock::Para(e), Some(Block::Para(p))) => MBlock::Para(para_to_model(Some(p), e, known_comments)),
             (EBlock::Para(e), _) => MBlock::Para(para_to_model(None, e, known_comments)),
-            (EBlock::Table(rows), Some(Block::Table(t))) => MBlock::Table {
-                rows: rows
-                    .iter()
-                    .enumerate()
-                    .map(|(ri, r)| {
-                        r.iter()
-                            .enumerate()
-                            .map(|(ci, c)| {
-                                let cell = t.rows.get(ri).and_then(|row| row.cells.get(ci));
-                                c.iter()
-                                    .enumerate()
-                                    .map(|(pi, e)| para_to_model(cell.and_then(|c| c.paras.get(pi)), e, known_comments))
-                                    .collect()
-                            })
-                            .collect()
-                    })
-                    .collect(),
-            },
+            (EBlock::Table(rows), Some(Block::Table(t))) => {
+                // Visible cells map to the Word cells where their merges start.
+                let anchors = t.anchors();
+                MBlock::Table {
+                    rows: rows
+                        .iter()
+                        .enumerate()
+                        .map(|(ri, r)| {
+                            r.iter()
+                                .enumerate()
+                                .map(|(ci, c)| {
+                                    let cell = anchors.get(ri).and_then(|a| a.get(ci)).and_then(|a| t.rows[ri].cells.get(a.cell));
+                                    c.paras
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(pi, e)| para_to_model(cell.and_then(|c| c.paras.get(pi)), e, known_comments))
+                                        .collect()
+                                })
+                                .collect()
+                        })
+                        .collect(),
+                    spans: spans_of(rows),
+                }
+            }
             (EBlock::Table(rows), _) => MBlock::Table {
-                rows: rows.iter().map(|r| r.iter().map(|c| c.iter().map(|e| para_to_model(None, e, known_comments)).collect()).collect()).collect(),
+                rows: rows.iter().map(|r| r.iter().map(|c| c.paras.iter().map(|e| para_to_model(None, e, known_comments)).collect()).collect()).collect(),
+                spans: spans_of(rows),
             },
             (EBlock::Opaque(n), b) => {
                 let (label, preview) = match b {
                     Some(Block::Opaque { label, .. }) => (label.clone(), String::new()),
                     Some(Block::Table(t)) => (
-                        "table with merged cells (read-only)".into(),
+                        "table docex can't edit (read-only)".into(),
                         t.rows
                             .iter()
                             .map(|r| {
@@ -368,13 +390,17 @@ pub fn import(m: &DocModel) -> Parsed {
                     blocks.push(EBlock::Para(e));
                 }
             }
-            MBlock::Table { rows } => blocks.push(EBlock::Table(
+            MBlock::Table { rows, spans } => blocks.push(EBlock::Table(
                 rows.iter()
-                    .map(|r| {
+                    .enumerate()
+                    .map(|(ri, r)| {
                         r.iter()
-                            .map(|c| {
+                            .enumerate()
+                            .map(|(ci, c)| {
                                 let v: Vec<EPara> = c.iter().map(para_from_model).collect();
-                                if v.is_empty() { vec![EPara { kind: Kind::Normal, atoms: Vec::new(), comments: Vec::new() }] } else { v }
+                                let paras = if v.is_empty() { vec![EPara { kind: Kind::Normal, atoms: Vec::new(), comments: Vec::new() }] } else { v };
+                                let [colspan, rowspan] = spans.get(ri).and_then(|s| s.get(ci)).copied().unwrap_or([1, 1]);
+                                ECell { paras, colspan: colspan.max(1), rowspan: rowspan.max(1) }
                             })
                             .collect()
                     })

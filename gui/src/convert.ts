@@ -55,7 +55,15 @@ function block(b: MBlock): PMNode {
     case "table":
       return nodes.table.create(
         null,
-        b.rows.map((r) => nodes.table_row.create(null, r.map((c) => nodes.table_cell.create(null, paras(c))))),
+        b.rows.map((r, ri) =>
+          nodes.table_row.create(
+            null,
+            r.map((c, ci) => {
+              const [colspan, rowspan] = b.spans?.[ri]?.[ci] ?? [1, 1];
+              return nodes.table_cell.create({ colspan, rowspan }, paras(c));
+            }),
+          ),
+        ),
       );
     case "opaque":
       return nodes.opaque.create({ id: b.id, label: b.label, preview: b.preview });
@@ -130,12 +138,19 @@ export function docToModel(doc: PMNode, pending?: PendingComment): DocModel {
     if (n.type === nodes.para) m.blocks.push({ type: "para", ...paraModel(n, pos, pending) });
     else if (n.type === nodes.table) {
       const rows: MPara[][][] = [];
+      const spans: [number, number][][] = [];
       n.forEach((row, rOff) => {
         const cells: MPara[][] = [];
-        row.forEach((cell, cOff) => cells.push(parasIn(cell, pos + 1 + rOff + 1 + cOff, pending)));
+        const rs: [number, number][] = [];
+        row.forEach((cell, cOff) => {
+          cells.push(parasIn(cell, pos + 1 + rOff + 1 + cOff, pending));
+          rs.push([cell.attrs.colspan ?? 1, cell.attrs.rowspan ?? 1]);
+        });
         rows.push(cells);
+        spans.push(rs);
       });
-      m.blocks.push({ type: "table", rows });
+      const merged = spans.some((r) => r.some(([c, s]) => c !== 1 || s !== 1));
+      m.blocks.push(merged ? { type: "table", rows, spans } : { type: "table", rows });
     } else if (n.type === nodes.opaque) {
       m.blocks.push({ type: "opaque", id: n.attrs.id, label: n.attrs.label, preview: n.attrs.preview });
     } else if (n.type === nodes.textbox) {

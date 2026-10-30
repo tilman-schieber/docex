@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 
 const root = join(import.meta.dirname, "..", "..");
 const files = process.argv.slice(2).map((f) => resolve(f));
-if (!files.length) files.push(...["rich.docx", "math.docx", "pandoc-math.docx"].map((f) => join(root, "tests/fixtures", f)));
+if (!files.length) files.push(...["rich.docx", "math.docx", "pandoc-math.docx", "merged-cells.docx"].map((f) => join(root, "tests/fixtures", f)));
 const dir = mkdtempSync(join(tmpdir(), "docex-gui-test-"));
 const cargo = (...a) => execFileSync("cargo", ["run", "-q", "-p", "docex-core", "--example", "modelcheck", "--", ...a], { cwd: root, encoding: "utf8" });
 
@@ -35,4 +35,12 @@ const want = "Second{++ bra++} clause {--stays--}{++remains++} here.";
 const ok = md.includes(want);
 if (!ok) failed++;
 console.log(`${ok ? "ok  " : "FAIL"} live tracking -> ${md.trim().split("\n").pop()}`);
+// Table structure from the editor: merge two cells, add a column.
+const mc = join(root, "tests/fixtures/merged-cells.docx");
+cargo("dump", mc, join(dir, "mc.json"));
+execFileSync("node", [join(import.meta.dirname, "..", "test-dist", "tables", "tables.js"), join(dir, "mc.json"), join(dir, "mc2.json")]);
+const tmd = execFileSync("cargo", ["run", "-q", "-p", "docex-core", "--example", "applymodel", "--", mc, join(dir, "mc2.json")], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+const tok = tmd.includes('<td colspan="2">Staff<br>{++Material++}</td>') && tmd.includes("<td>WP1 Data pipeline</td>\n<td></td>\n<td>40,000</td>");
+if (!tok) failed++;
+console.log(`${tok ? "ok  " : "FAIL"} table merge + new column${tok ? "" : "\n" + tmd}`);
 process.exit(failed ? 1 : 0);

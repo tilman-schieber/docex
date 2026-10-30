@@ -36,7 +36,7 @@ Rules:
 - **Structure:** `#` makes a heading, `- ` a bullet, `1. ` a numbered item, `> ` a quote, `: ` a caption.
 - **Formulas:** `$…$` inline, `$$…$$` on its own line. They become Word equations.
 - **Footnotes:** edit the `[^n]: text` definitions at the end. To add one, put `[^new]` in the text and `[^new]: text` at the end.
-- **Tables:** edit cells in place; adding or removing rows works, adding columns does not. Blocks marked `docex-table` are read-only. Inside a cell, write `|` as `\|`.
+- **Tables:** edit cells in place; add or remove rows and columns. Pipe tables: inside a cell, write `|` as `\|`. Tables with merged cells are HTML (`<table>`, one `<td>` per line, `colspan`/`rowspan`); a cell covered by a `rowspan` from above is not listed in its row. Cell text is docex Markdown, `<br>` separates paragraphs. To merge, widen one cell's span and remove the cells it now covers. Keep the table free of blank lines. Blocks marked `docex-table` are read-only.
 - **Text boxes:** edit the paragraphs between `<!-- docex:textbox tbN -->` and `<!-- /docex:textbox -->`. Leave the marker lines alone.
 
 ## Machine-readable output

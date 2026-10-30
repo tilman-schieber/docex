@@ -31,7 +31,8 @@ export interface MPara {
 
 export type MBlock =
   | ({ type: "para" } & MPara)
-  | { type: "table"; rows: MPara[][][] }
+  /** Rows of visible cells; `spans` gives each cell's [colspan, rowspan] when any cell is merged. */
+  | { type: "table"; rows: MPara[][][]; spans?: [number, number][][] }
   | { type: "opaque"; id: number; label: string; preview: string };
 
 export interface MBox {

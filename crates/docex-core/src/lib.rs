@@ -395,7 +395,19 @@ impl Docx {
                         }
                         (Block::Table(t), mdparse::EBlock::Table(o), mdparse::EBlock::Table(n)) => {
                             if let Some(Node::Element(tbl)) = body_el.children.get(t.idx) {
-                                if let Some(r) = patch::patch_table(t, tbl, o, n, &mut cx) {
+                                // A simple table that stays simple keeps the row-by-row patch;
+                                // merged cells or a new column count go through the grid.
+                                let simple = t.kind == model::TableKind::Simple
+                                    && !mdparse::is_grid(n)
+                                    && n.iter().all(|r| r.len() <= t.cols)
+                                    && n.iter().any(|r| r.len() == t.cols);
+                                let r = if simple {
+                                    let paras = |x: &mdparse::ETable| x.iter().map(|r| r.iter().map(|c| c.paras.clone()).collect()).collect::<Vec<_>>();
+                                    patch::patch_table(t, tbl, &paras(o), &paras(n), &mut cx)
+                                } else {
+                                    patch::patch_grid(t, tbl, o, n, &mut cx)
+                                };
+                                if let Some(r) = r {
                                     sp.replace.insert(t.idx, vec![r.into()]);
                                 }
                             }
@@ -413,7 +425,7 @@ impl Docx {
                             }
                         }
                         (Block::Opaque { .. }, _) if opts.keep_opaque => {}
-                        (Block::Table(t), _) if opts.keep_opaque && !t.simple => {}
+                        (Block::Table(t), _) if opts.keep_opaque && !t.editable() => {}
                         (b, _) => {
                             let idx = b.body_idx();
                             if opts.tracked {

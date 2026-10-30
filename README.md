@@ -54,7 +54,8 @@ Files are changed in place with a `FILE.docx~` backup. Use `-o OUT.docx` to writ
 | Bold, italic, strikethrough, code | `**b**`, `*i*`, `~~s~~`, `` `c` `` |
 | Hyperlinks | `[text](url)` |
 | Simple tables | pipe tables (`<br>` separates paragraphs in a cell) |
-| Tables with merged cells | read-only `docex-table` block |
+| Tables with merged cells | HTML `<table>` with `colspan` / `rowspan`, one cell per line |
+| Nested tables, content controls in tables | read-only `docex-table` block |
 | Images | `![alt](media/image1.png)` (`cat --media DIR` extracts them) |
 | Captions (figures, tables) | `: Figure 1: text` |
 | Equations (Office Math) | `$E=mc^2$` inline, `$$\int_0^1 x\,dx$$` on its own line |
@@ -70,7 +71,22 @@ Equations are Word's own (Office Math), shown and written as LaTeX. Existing equ
 
 Footnote text, text box text and captions are edited like any other paragraph, with tracked changes. A new `[^any-label]` reference plus its `[^any-label]: text` definition creates a Word footnote, which Word numbers itself. A new `: Figure 3: text` caption gets a real auto-numbering field (`SEQ Figure`), so Word renumbers it. Tracked changes in footnotes show up in `docex changes` like any other; edits inside a text box are written to both copies Word keeps of it.
 
-Tables are deliberately kept simple: you can edit cell text and add or remove rows. Column changes and tables with merged cells (shown read-only) are left to Word.
+Tables without merged cells are pipe tables. A table with merged cells becomes an HTML table, because Markdown has no way to say that a cell spans columns or rows:
+
+```html
+<table>
+<tr>
+<td rowspan="2">Work package</td>
+<td colspan="2">2026</td>
+</tr>
+<tr>
+<td>Staff</td>
+<td>**Material**</td>
+</tr>
+</table>
+```
+
+Cell content is ordinary docex Markdown (formatting, links, `$math$`, CriticMarkup, comments); `<br>` separates paragraphs in a cell. In either form you can edit text, add and remove rows and columns, and in the HTML form merge and split cells by changing `colspan` / `rowspan` and the cells around them. Edited cells keep their shading, borders and widths; column widths are redistributed so the table keeps its total width. Text edits and added or removed rows are tracked changes. Merging, splitting and adding or removing columns are applied directly, with a warning, since Word has no tracked form for them. Only tables with nested tables or content controls stay read-only.
 
 Things deliberately left out: spacing, fonts, colours, page layout. New text takes on the formatting of the text around it, and new paragraphs copy the nearest paragraph of the same kind, so additions look native in Word.
 
@@ -79,7 +95,8 @@ Things deliberately left out: spacing, fonts, colours, page layout. New text tak
 `gui/` is a desktop editor on the same core (Tauri + ProseMirror). It shows the document formatted:
 - tracked changes in color; click one in the text to see who made it, accept or reject it, or comment on it (a replacement is decided as a whole, as in the sidebar)
 - comments, which you can add, reply to, resolve or delete
-- tables (add and remove rows), images, footnotes, text boxes and captions
+- tables, including merged cells: add and remove rows and columns, merge cells (drag across them) and split them
+- images, footnotes, text boxes and captions
 
 It's built for reviewing, not just editing:
 - **Outline:** the heading tree with per-section counts of changes and comments, plus an activity bar colored by author. It follows where you are and collapses; click to jump.

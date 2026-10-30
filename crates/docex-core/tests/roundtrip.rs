@@ -351,7 +351,7 @@ fn markdown_paste_model() {
         .iter()
         .map(|b| match b {
             MBlock::Para(p) => p.kind.clone(),
-            MBlock::Table { rows } => format!("table{}", rows.len()),
+            MBlock::Table { rows, .. } => format!("table{}", rows.len()),
             MBlock::Opaque { .. } => "opaque".into(),
         })
         .collect();
@@ -575,4 +575,116 @@ fn keep_opaque_preserves_unmatched_placeholders() {
     d.apply("Body text changed.\n", &o).unwrap();
     assert!(d.dom.to_xml().contains("Table of Contents"));
     assert!(d.render(View::Review).contains("Body text changed."));
+}
+
+// A table as Word writes it: a header cell over two columns, a shaded cell over two rows.
+const MERGED: &str = r#"<w:p><w:r><w:t>Before</w:t></w:r></w:p><w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/></w:tblGrid><w:tr><w:tc><w:tcPr><w:tcW w:w="6000" w:type="dxa"/><w:gridSpan w:val="2"/></w:tcPr><w:p><w:r><w:t>Wide</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/><w:vMerge w:val="restart"/><w:shd w:val="clear" w:fill="FFFF00"/></w:tcPr><w:p><w:r><w:t>Tall</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>a</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>b</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/><w:vMerge/><w:shd w:val="clear" w:fill="FFFF00"/></w:tcPr><w:p/></w:tc></w:tr><w:tr><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>c</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>d</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>e</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>After</w:t></w:r></w:p>"#;
+
+const MERGED_MD: &str = "<table>\n<tr>\n<td colspan=\"2\">Wide</td>\n<td rowspan=\"2\">Tall</td>\n</tr>\n<tr>\n<td>a</td>\n<td>b</td>\n</tr>\n<tr>\n<td>c</td>\n<td>d</td>\n<td>e</td>\n</tr>\n</table>";
+
+/// Apply an edit of the merged table; return the reopened document, its
+/// rendering and the warnings.
+fn edit_merged(tracked: bool, f: impl Fn(&str) -> String) -> (Docx, String, Vec<String>) {
+    let mut d = docx(MERGED);
+    let md = d.render(View::Review);
+    let new = f(&md);
+    assert_ne!(new, md, "the edit didn't apply");
+    let r = d.apply(&new, &opts(tracked)).unwrap();
+    let mut d = reopen(&mut d);
+    let out = d.render(View::Review);
+    // What docex writes reads back the same.
+    let again = d.apply(&out, &opts(tracked)).unwrap();
+    assert!(!again.changed(), "not stable: {out}\n{again:?}");
+    (d, out, r.warnings)
+}
+
+#[test]
+fn merged_cells_render_as_html_and_noop_is_identical() {
+    let mut d = docx(MERGED);
+    let md = d.render(View::Review);
+    assert!(md.contains(MERGED_MD), "{md}");
+    let before = d.dom.to_xml();
+    let r = d.apply(&md, &opts(true)).unwrap();
+    assert!(!r.changed(), "{r:?}");
+    assert_eq!(d.dom.to_xml(), before);
+    // The GUI model round-trips too.
+    let m = d.model();
+    let r = d.apply_model(&m, &opts(true)).unwrap();
+    assert!(!r.changed(), "{r:?}");
+    assert_eq!(d.dom.to_xml(), before);
+}
+
+#[test]
+fn merged_cell_text_edit_is_tracked_and_keeps_layout() {
+    let (d, out, w) = edit_merged(true, |md| md.replace(">Tall<", ">Taller<").replace(">a<", ">alpha<"));
+    assert!(w.is_empty(), "{w:?}");
+    assert!(out.contains("<td rowspan=\"2\">{--Tall--}{++Taller++}</td>"), "{out}");
+    assert!(out.contains("<td>{--a--}{++alpha++}</td>"), "{out}");
+    let xml = d.dom.to_xml();
+    assert!(xml.contains(r#"<w:gridSpan w:val="2"/>"#) && xml.contains(r#"<w:vMerge w:val="restart"/>"#) && xml.contains(r#"w:fill="FFFF00""#), "{xml}");
+}
+
+#[test]
+fn markup_inside_html_cells() {
+    let (_, out, _) = edit_merged(true, |md| md.replace(">b<", ">**bold** and {++new++} $x^2$<").replace(">c<", ">{==c==}{>>check<<}<"));
+    assert!(out.contains("<td>{--b--}{++**bold** and ++}{++new++}{++ $x^2$++}</td>") || out.contains("**bold**"), "{out}");
+    assert!(out.contains("$x^2$") && out.contains("{>>Me: check<<}"), "{out}");
+}
+
+#[test]
+fn row_added_to_merged_table_is_tracked() {
+    let (d, out, _) = edit_merged(true, |md| md.replace("<td>e</td>\n</tr>\n", "<td>e</td>\n</tr>\n<tr>\n<td>f</td>\n<td>g</td>\n<td>h</td>\n</tr>\n"));
+    assert!(out.contains("<td>{++f++}</td>"), "{out}");
+    let xml = d.dom.to_xml();
+    assert_eq!(xml.matches("<w:tr>").count() + xml.matches("<w:tr ").count(), 4, "{xml}");
+    assert!(xml.contains("<w:trPr><w:ins "), "{xml}");
+}
+
+#[test]
+fn merge_split_and_extend_cells() {
+    // Merge c and d.
+    let (d, out, w) = edit_merged(true, |md| md.replace("<td>c</td>\n<td>d</td>", "<td colspan=\"2\">c d</td>"));
+    assert!(out.contains("<td colspan=\"2\">c{++ d++}</td>") || out.contains("<td colspan=\"2\">{++c ++}d</td>"), "{out}");
+    assert!(w.iter().any(|w| w.contains("not recorded as tracked")), "{w:?}");
+    assert_eq!(d.dom.to_xml().matches(r#"<w:gridSpan w:val="2"/>"#).count(), 2);
+    // Split the wide cell.
+    let (_, out, _) = edit_merged(false, |md| md.replace("<td colspan=\"2\">Wide</td>", "<td>Wide</td>\n<td>New</td>"));
+    assert!(out.contains("<td>Wide</td>\n<td>New</td>\n<td rowspan=\"2\">Tall</td>"), "{out}");
+    // Let the tall cell reach the last row.
+    let (d, out, _) = edit_merged(false, |md| md.replace("rowspan=\"2\"", "rowspan=\"3\"").replace("<td>e</td>\n", ""));
+    assert!(out.contains("<td rowspan=\"3\">Tall</td>") && !out.contains(">e<"), "{out}");
+    let xml = d.dom.to_xml();
+    assert_eq!(xml.matches("<w:vMerge/>").count(), 2, "{xml}");
+    assert!(xml.matches(r#"w:fill="FFFF00""#).count() == 3, "shading follows the merge: {xml}");
+}
+
+#[test]
+fn columns_added_and_removed() {
+    let (d, out, _) = edit_merged(false, |md| {
+        md.replace("<td rowspan=\"2\">Tall</td>", "<td rowspan=\"2\">Tall</td>\n<td>X1</td>").replace("<td>b</td>", "<td>b</td>\n<td>X2</td>").replace("<td>e</td>", "<td>e</td>\n<td>X3</td>")
+    });
+    assert!(out.contains("<td rowspan=\"2\">Tall</td>\n<td>X1</td>"), "{out}");
+    let xml = d.dom.to_xml();
+    assert_eq!(xml.matches("<w:gridCol ").count(), 4, "{xml}");
+    // Widths keep the table's total.
+    let total: i64 = xml.split("<w:gridCol w:w=\"").skip(1).map(|s| s.split('"').next().unwrap().parse::<i64>().unwrap()).sum();
+    assert!((8990..=9000).contains(&total), "{total}");
+    // A simple table gets a column too (once it couldn't).
+    let mut s = docx(r#"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>h1</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>h2</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>1</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>2</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"#);
+    let md = s.render(View::Review).replace("| h1 | h2 |\n| --- | --- |\n| 1 | 2 |", "| h1 | h2 | h3 |\n| --- | --- | --- |\n| 1 | 2 | 3 |");
+    let r = s.apply(&md, &opts(false)).unwrap();
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    assert!(reopen(&mut s).render(View::Review).contains("| h1 | h2 | h3 |\n| --- | --- | --- |\n| 1 | 2 | 3 |"));
+}
+
+#[test]
+fn new_table_with_merged_cells() {
+    let mut d = docx(WORDY);
+    let md = d.render(View::Review) + "\n" + MERGED_MD + "\n";
+    d.apply(&md, &opts(false)).unwrap();
+    let mut d = reopen(&mut d);
+    let out = d.render(View::Review);
+    assert!(out.contains("<td colspan=\"2\">**Wide**</td>\n<td rowspan=\"2\">**Tall**</td>"), "{out}");
+    assert!(out.contains("<td>c</td>\n<td>d</td>\n<td>e</td>"), "{out}");
+    assert!(!d.apply(&out, &opts(false)).unwrap().changed());
 }
