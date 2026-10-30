@@ -12,7 +12,7 @@ export interface TriageHost {
   /** Scroll the document to the item and highlight it; `inset` px at the top are covered by the triage panel. */
   show(it: Item, inset: number): void;
   /** Apply all decisions at once. */
-  apply(accept: string[], reject: string[], resolveComments: string[], label: string): Promise<unknown>;
+  apply(decisions: { accept: Item[]; reject: Item[]; resolve: Item[] }, label: string): Promise<unknown>;
   reply(it: Item, text: string): Promise<unknown>;
   ask(title: string): Promise<string | null>;
   /** Section path of the item, for the card header. */
@@ -48,18 +48,11 @@ export function openTriage(items: Item[], scope: string, host: TriageHost) {
   }
 
   async function apply() {
-    const acc: string[] = [];
-    const rej: string[] = [];
-    const res: string[] = [];
-    for (const it of items) {
-      const d = decisions.get(it.key);
-      if (d === "accept") acc.push(...it.wids);
-      if (d === "reject") rej.push(...it.wids);
-      if (d === "resolve" && it.comment) res.push(it.comment.id);
-    }
+    const pick = (d: Decision) => items.filter((it) => decisions.get(it.key) === d);
+    const chosen = { accept: pick("accept"), reject: pick("reject"), resolve: pick("resolve").filter((it) => it.comment) };
     const label = `Triage: ${[count("accept") && `${count("accept")} accepted`, count("reject") && `${count("reject")} rejected`, count("resolve") && `${count("resolve")} resolved`].filter(Boolean).join(", ")}`;
     close();
-    if (acc.length || rej.length || res.length) await host.apply(acc, rej, res, label);
+    if (chosen.accept.length || chosen.reject.length || chosen.resolve.length) await host.apply(chosen, label);
   }
 
   function decide(d: Decision) {

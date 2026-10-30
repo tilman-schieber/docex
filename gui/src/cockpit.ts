@@ -20,6 +20,7 @@ import type { EditorView } from "prosemirror-view";
 import { analyze, inSubtree, type Index, type Item, type Person } from "./analyze";
 import { schema } from "./schema";
 import { setHighlight } from "./highlight";
+import * as log from "./review-log";
 import { authorColor, initials } from "./theme";
 import type { View } from "./types";
 
@@ -40,6 +41,8 @@ export interface App {
   draft(it: Item, onText: (t: string) => void): Promise<string>;
   /** The "since you last saw it" chip, if there is a baseline. */
   sinceChip(): HTMLElement | null;
+  /** The "done reviewing" summary. */
+  summary(): void;
 }
 
 type IconNode = Parameters<typeof createElement>[0];
@@ -96,7 +99,7 @@ export function createCockpit(app: App) {
   let index: Index = analyze(view.state.doc, null, app.me());
   const filter = {
     people: new Set<string>(),
-    show: "all" as "all" | "changes" | "comments" | "open",
+    show: "all" as "all" | "changes" | "comments" | "open" | "mine",
     q: "",
     section: null as number | null,
     hideNoise: false,
@@ -119,7 +122,8 @@ export function createCockpit(app: App) {
   function matches(it: Item, ignore: "people" | "section" | null = null) {
     if (ignore !== "people" && filter.people.size && !filter.people.has(it.author)) return false;
     if (filter.show === "changes" && it.kind === "comment") return false;
-    if ((filter.show === "comments" || filter.show === "open") && it.kind !== "comment") return false;
+    if ((filter.show === "comments" || filter.show === "open" || filter.show === "mine") && it.kind !== "comment") return false;
+    if (filter.show === "mine" && !waitingOnMe(it)) return false;
     if (filter.show === "open" && it.comment?.done) return false;
     if (ignore !== "section" && filter.section !== null && !inSubtree(index.sections, filter.section, it.section)) return false;
     if (filter.hideNoise && it.noise) return false;
@@ -133,6 +137,18 @@ export function createCockpit(app: App) {
   }
 
   const shown = () => index.items.filter((i) => matches(i));
+
+  /** An open thread where someone else had the last word and you're involved
+   *  (you started it or replied) or @-mentioned by full or first name. */
+  function waitingOnMe(it: Item): boolean {
+    if (it.kind !== "comment" || !it.comment || it.comment.done) return false;
+    const me = app.me();
+    const msgs = [it.comment, ...(it.replies ?? [])];
+    if (msgs[msgs.length - 1].author === me) return false;
+    const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const mention = new RegExp(`@\\s?(${esc(me)}|${esc(me.split(/\s+/)[0])})\\b`, "i");
+    return msgs.some((m) => m.author === me) || msgs.some((m) => mention.test(m.text));
+  }
 
   // ------------------------------------------------------------------------
   // Navigation
@@ -213,6 +229,20 @@ export function createCockpit(app: App) {
     return `${accept ? "Accepted" : "Rejected"} ${what.length > 60 ? what.slice(0, 57) + "…" : what}`;
   }
 
+  const sectionOf = (it: Item) => index.sections[it.section]?.title ?? "";
+
+  /** Others' changes you accepted or rejected (your own edits aren't reviewing). */
+  function logDecision(items: Item[], accept: boolean) {
+    const others = items.filter((i) => i.kind !== "comment" && !i.pending && i.author !== app.me());
+    if (others.length) logged(accept ? "accepted" : "rejected", others);
+  }
+
+  /** Record decisions and show the new progress (the panel was drawn before they were logged). */
+  function logged(action: log.Action, items: Item[]) {
+    log.record(action, items, sectionOf);
+    renderReview();
+  }
+
   const sig = (i: Item) => `${i.kind}\u0001${i.old ?? ""}\u0001${i.new ?? ""}`;
 
   async function resolve(items: Item[], accept: boolean) {
@@ -238,12 +268,12 @@ export function createCockpit(app: App) {
         }
       }
       const wids = [...synced, ...mapped].flatMap((i) => i.wids);
-      if (wids.length) await app.call("resolve", { wids, accept, label: decided(fresh, accept) });
+      if (wids.length && (await app.call("resolve", { wids, accept, label: decided(fresh, accept) }))) logDecision(fresh, accept);
       return;
     }
     resolveLocal(fresh, accept);
     const wids = fresh.filter((i) => !i.pending).flatMap((i) => i.wids);
-    if (wids.length) await app.call("resolve", { wids, accept, label: decided(fresh, accept) });
+    if (wids.length && (await app.call("resolve", { wids, accept, label: decided(fresh, accept) }))) logDecision(fresh, accept);
     else refreshNow();
   }
 
@@ -364,6 +394,7 @@ export function createCockpit(app: App) {
         p.other ? h("span", {}, h("b", { style: "color:var(--blue)" }, String(p.other)), " formatting / other") : null,
         h("span", {}, h("b", { style: "color:var(--yellow)" }, String(p.comments)), ` comments, ${plural(p.replies, "reply", "replies")}`),
       ),
+      log.decided(p.name).length ? h("div", { class: "hc-done" }, `you decided ${log.decided(p.name).length} of ${log.decided(p.name).length + index.items.filter((i) => i.author === p.name && i.kind !== "comment" && !i.pending).length}`) : "",
       h("div", { class: "muted hc-hint" }, total + p.comments ? "click: only this person · shift+click: add" : ""),
     );
     const r = anchor.getBoundingClientRect();
@@ -411,7 +442,9 @@ export function createCockpit(app: App) {
     if (it.kind === "comment") {
       const c = it.comment!;
       acts.append(
-        act(c.done ? Undo2 : Check, c.done ? "Reopen" : "Resolve", () => app.call("comment_done", { id: c.id, done: !c.done, label: c.done ? "Reopened the thread" : "Resolved the thread" }), "ok"),
+        act(c.done ? Undo2 : Check, c.done ? "Reopen" : "Resolve", async () => {
+          if (await app.call("comment_done", { id: c.id, done: !c.done, label: c.done ? "Reopened the thread" : "Resolved the thread" })) logged(c.done ? "reopened" : "resolved", [it]);
+        }, "ok"),
         confirmDelete === c.id
           ? h(
               "button",
@@ -421,7 +454,7 @@ export function createCockpit(app: App) {
                 onclick: (e: Event) => {
                   e.stopPropagation();
                   confirmDelete = null;
-                  void app.call("comment_delete", { id: c.id, label: "Deleted the thread" });
+                  void app.call("comment_delete", { id: c.id, label: "Deleted the thread" }).then((v) => v && logged("deleted", [it]));
                 },
               },
               icon(Trash2),
@@ -449,6 +482,7 @@ export function createCockpit(app: App) {
           ` · ${ago(it.date)}`,
           it.replies?.length ? h("span", { class: "replies" }, " · ", icon(MessageSquare, "ico tiny inline"), ` ${it.replies.length}`) : null,
           c.done ? " · resolved" : null,
+          waitingOnMe(it) ? h("span", { class: "for-me" }, " · waiting on you") : null,
         ),
       );
       if (expanded === it.key) {
@@ -458,7 +492,7 @@ export function createCockpit(app: App) {
         const ta = h("textarea", { rows: 2, placeholder: "Reply…  (Ctrl+Enter)", onclick: (e: Event) => e.stopPropagation() }) as HTMLTextAreaElement;
         const send = async () => {
           const text = ta.value.trim();
-          if (text) await app.call("comment_reply", { id: c.id, text });
+          if (text && (await app.call("comment_reply", { id: c.id, text }))) logged("replied", [it]);
         };
         ta.onkeydown = (e) => {
           if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
@@ -541,6 +575,21 @@ export function createCockpit(app: App) {
           )
         : h("span", { class: "muted" }, "No changes or comments. Edit away."),
     );
+    // Progress through others' changes, with the "done reviewing" summary.
+    const remaining = index.items.filter((i) => i.kind !== "comment" && !i.pending && i.author !== app.me()).length;
+    const done = log.decided().length;
+    const progress =
+      done + remaining
+        ? h(
+            "div",
+            { class: "progress-row" },
+            h("span", { class: "progress-bar" }, h("span", { style: `width:${(done / (done + remaining)) * 100}%` })),
+            h("span", { class: "muted" }, `${done} of ${done + remaining} reviewed`),
+            done || log.count("resolved") || log.count("replied")
+              ? h("button", { class: "clear", "data-tip": "What you decided, as text to paste into a reply", onclick: () => app.summary() }, "summary")
+              : null,
+          )
+        : null;
     const extras = h("div", { class: "extras" });
     if (t.noise) {
       // Noise within the current filter (ignoring the hide-noise switch itself).
@@ -623,6 +672,7 @@ export function createCockpit(app: App) {
       pill("changes", "Changes", base.filter((i) => i.kind !== "comment").length),
       pill("comments", "Comments", base.filter((i) => i.kind === "comment").length),
       pill("open", "Open", base.filter((i) => i.kind === "comment" && !i.comment?.done).length),
+      ...(base.some(waitingOnMe) ? [pill("mine", "For me", base.filter(waitingOnMe).length)] : []),
       h("span", { class: "search-wrap" }, icon(Search, "ico tiny"), search),
     );
     // Active filters + bulk actions.
@@ -661,7 +711,7 @@ export function createCockpit(app: App) {
     );
     const feed = h("div", { class: "feed", id: "feed" });
     el.replaceChildren(
-      h("div", { class: "review-head" }, summary, extras.childNodes.length ? extras : "", people, filters, scopeRow, bulk),
+      h("div", { class: "review-head" }, summary, progress, extras.childNodes.length ? extras : "", people, filters, scopeRow, bulk),
       feed,
       h("div", { class: "keys muted" }, "Alt+↑↓ next/prev · Alt+A accept · Alt+R reject"),
     );
@@ -937,5 +987,6 @@ export function createCockpit(app: App) {
     stats() {
       return index.totals;
     },
+    waitingOnMe: () => index.items.filter(waitingOnMe),
   };
 }

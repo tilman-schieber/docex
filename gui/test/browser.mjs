@@ -126,7 +126,8 @@ class Page {
     const c = await this.eval(`(() => {
       const el = [...document.querySelectorAll(${JSON.stringify(sel)})].find((e) => ${text ? `e.textContent.includes(${JSON.stringify(text)})` : "true"});
       if (!el) return null;
-      el.scrollIntoView({ block: "center" });
+      // Instantly: the page scrolls smoothly, which would move the target after we measured it.
+      el.scrollIntoView({ block: "center", behavior: "instant" });
       const r = el.getBoundingClientRect();
       return [r.left + r.width / 2, r.top + r.height / 2];
     })()`);
@@ -158,9 +159,12 @@ class Page {
     const [x1, y1] = await this.center(fromSel, fromText);
     const [x2, y2] = await this.center(toSel, toText);
     await this.mouse("mouseMoved", x1, y1);
-    await this.mouse("mousePressed", x1, y1);
-    for (let k = 1; k <= 8; k++) await this.mouse("mouseMoved", x1 + ((x2 - x1) * k) / 8, y1 + ((y2 - y1) * k) / 8, { buttons: 1 });
-    await this.mouse("mouseReleased", x2, y2);
+    await this.mouse("mousePressed", x1, y1, { buttons: 1 });
+    for (let k = 1; k <= 8; k++) {
+      await this.mouse("mouseMoved", x1 + ((x2 - x1) * k) / 8, y1 + ((y2 - y1) * k) / 8, { buttons: 1 });
+      await sleep(25);
+    }
+    await this.mouse("mouseReleased", x2, y2, { buttons: 0 });
     await sleep(150);
   }
 

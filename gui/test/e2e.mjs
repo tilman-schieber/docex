@@ -1,7 +1,9 @@
 // End-to-end: real clicks and keys in the editor (headless Chromium) on the
 // real backend, checking the document docex saves.
 //   npm run e2e
-import { start, scratch, cat } from "./browser.mjs";
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
+import { start, scratch, cat, root } from "./browser.mjs";
 
 const { page, dir, close } = await start();
 let failed = 0;
@@ -128,6 +130,46 @@ try {
     await page.settle();
     const md = cat(file);
     check(/<u><mark>\w+<\/mark><\/u>|<mark><u>\w+<\/u><\/mark>|<u>\w+<\/u>/.test(md) && md.includes("<mark>"), md);
+  });
+
+  // A fresh copy, with a comment by Bob that mentions Tilman.
+  file = scratch(dir, "review.docx");
+  execFileSync(join(root, "target/debug/docex"), ["comment", file, "--on", "held-out", "@Tilman can you confirm the split?", "--author", "Bob Okafor"]);
+  await page.open(file);
+
+  await scenario("review progress and the done-reviewing summary", async () => {
+    check((await page.eval(`document.querySelector(".progress-row").textContent`)).includes("0 of 19 reviewed"), "progress at start");
+    await page.click(".ProseMirror ins.chg", "recruiting");
+    await page.waitFor(`!document.getElementById("popover").hidden`);
+    await page.click("#popover button", "Accept");
+    await page.settle();
+    await page.click(".ProseMirror ins.chg", "24");
+    await page.waitFor(`!document.getElementById("popover").hidden && document.getElementById("popover").textContent.includes("24")`);
+    await page.click("#popover button", "Reject");
+    await page.settle();
+    check((await page.eval(`document.querySelector(".progress-row").textContent`)).includes("2 of 19 reviewed"), await page.eval(`document.querySelector(".progress-row").textContent`));
+    await page.click(".progress-row button", "summary");
+    await page.waitFor(`document.querySelector(".summary-text")`);
+    const text = await page.eval(`document.querySelector(".summary-text").value`);
+    for (const want of ["I went through 2 of 19 changes: 1 accepted, 1 rejected, 17 still open.", 'not taken: "twenty" → "24" (Next steps)', "Chen Wei: 1 accepted", "Still open (4):"]) {
+      check(text.includes(want), `missing ${JSON.stringify(want)} in\n${text}`);
+    }
+    await page.key("Escape");
+    await page.key("z", "Control");
+    await page.settle();
+    check((await page.eval(`document.querySelector(".progress-row").textContent`)).includes("1 of 19 reviewed"), "undo should take the decision out of the progress");
+  });
+
+  await scenario("threads waiting on me", async () => {
+    await page.click("#sidebar .pill", "For me");
+    const items = await page.eval(`[...document.querySelectorAll("#feed .item.comment")].map((e) => e.textContent)`);
+    check(items.length === 1 && items[0].includes("can you confirm") && items[0].includes("waiting on you"), JSON.stringify(items));
+    await page.click("#feed .item.comment", "can you confirm");
+    await page.click("#feed .reply-box textarea");
+    await page.type("Yes, 500 held out.");
+    await page.key("Enter", "Control");
+    await page.settle();
+    check(!(await page.eval(`[...document.querySelectorAll("#sidebar .pill")].some((p) => p.textContent.includes("For me"))`)), "answered thread still waiting on me");
   });
 } finally {
   await close();

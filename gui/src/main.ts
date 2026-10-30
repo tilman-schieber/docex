@@ -70,6 +70,7 @@ import { atomIndex, docToModel, modelToDoc, type PendingComment } from "./conver
 import { imageUrls, KINDS, renderMath, schema } from "./schema";
 import { trackTransaction } from "./track";
 import { setGraphics } from "./chart";
+import * as reviewLog from "./review-log";
 import type { Change, Comment, HeaderFooter, View } from "./types";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
@@ -112,7 +113,11 @@ async function undoReview() {
   if (!current?.can_undo) return false;
   dropActionToasts();
   const v = await call("undo_review");
-  if (v) toast("Undone");
+  if (v) {
+    reviewLog.undoLast();
+    cockpit.rerender();
+    toast("Undone");
+  }
   return true;
 }
 
@@ -408,6 +413,41 @@ function sinceChip(): HTMLElement | null {
 
 const aiHost: AIHost = { view, author: () => author, toast, index: () => cockpit.index() };
 
+const sectionOf = (it: Item) => cockpit.index().sections[it.section]?.title ?? "";
+
+/** "Done reviewing": what you decided, as text to paste into a reply. */
+function showSummary() {
+  const idx = cockpit.index();
+  const text = reviewLog.summaryText({
+    file: current?.path ? basename(current.path) : "Untitled",
+    me: author,
+    open: idx.items.filter((i) => i.kind === "comment" && !i.comment?.done),
+    remaining: idx.items.filter((i) => i.kind !== "comment" && !i.pending && i.author !== author).length,
+    mine: idx.items.filter((i) => i.kind !== "comment" && i.author === author).length,
+  });
+  const modal = $("#modal");
+  const area = h("textarea", { value: text, rows: 16, className: "summary-text", readOnly: true });
+  const close = () => {
+    modal.hidden = true;
+    modal.replaceChildren();
+    view.focus();
+  };
+  const copy = h("button", {
+    class: "primary",
+    textContent: "Copy",
+    onclick: () => {
+      area.select();
+      document.execCommand("copy");
+      toast("Summary copied");
+      close();
+    },
+  });
+  area.addEventListener("keydown", (e) => (e as KeyboardEvent).key === "Escape" && close());
+  modal.replaceChildren(h("div", { class: "dialog wide" }, h("label", {}, "Review summary"), area, h("div", { class: "row" }, h("button", { textContent: "Close", onclick: close }), copy)));
+  modal.hidden = false;
+  area.focus();
+}
+
 /** A comment on the range of a change (used from triage). */
 async function commentOn(it: Item, text: string) {
   if (it.from === null) return toast("This change has no place in the text to comment on.");
@@ -427,8 +467,26 @@ const cockpit = createCockpit({
   triage: (items, scope) =>
     openTriage(items, scope, {
       show: (it, inset) => cockpit.focus(it, true, { hold: true, inset }),
-      apply: (accept, reject, done, label) => call("resolve_batch", { accept, reject, done_comments: done, label }),
-      reply: (it, text) => (it.comment ? call("comment_reply", { id: it.comment.id, text }) : commentOn(it, text)),
+      apply: async (d, label) => {
+        const v = await call("resolve_batch", {
+          accept: d.accept.flatMap((i) => i.wids),
+          reject: d.reject.flatMap((i) => i.wids),
+          done_comments: d.resolve.map((i) => i.comment!.id),
+          label,
+        });
+        const others = (l: Item[]) => l.filter((i) => i.author !== author);
+        if (v) {
+          reviewLog.recordMany([["accepted", others(d.accept)], ["rejected", others(d.reject)], ["resolved", d.resolve]], sectionOf);
+          cockpit.rerender();
+        }
+      },
+      reply: async (it, text) => {
+        if (!it.comment) return commentOn(it, text);
+        if (await call("comment_reply", { id: it.comment.id, text })) {
+          reviewLog.record("replied", [it], sectionOf);
+          cockpit.rerender();
+        }
+      },
       ask: (title) => askText(title, "", true),
       section: (it) => cockpit.index().sections[it.section]?.title ?? "",
       done: () => {
@@ -438,6 +496,7 @@ const cockpit = createCockpit({
       },
     }),
   summarize: (items, scope) => void summarizeReview(aiHost, items, scope),
+  summary: () => showSummary(),
   draft: (it, onText) => draftReply(aiHost, it, onText),
   sinceChip,
 });
@@ -475,6 +534,7 @@ function load(v: View, keepSelection = true) {
   tracking = v.track;
   for (const [k, url] of Object.entries(v.images)) imageUrls.set(k, url);
   setGraphics(v.model.graphics);
+  reviewLog.resetFor(v.path);
   const sel = view.state.selection;
   const doc = modelToDoc(v.model);
   let state = EditorState.create({ doc, plugins: plugins() });
@@ -943,6 +1003,9 @@ function paletteEntries(): Entry[] {
     { label: "Accept all noise (formatting, whitespace, punctuation)", group: "Review", run: () => cockpit.resolve(idx.items.filter((i) => i.noise), true) },
     { label: "Show only open comment threads", group: "Review", run: () => cockpit.filterTo({ show: "open" }) },
     { label: "Clear review filters", group: "Review", run: () => cockpit.clearFilters() },
+    { label: "Done reviewing: summary to paste into a reply", group: "Review", run: showSummary },
+    { label: `Show threads waiting on me (${cockpit.waitingOnMe().length})`, group: "Review", run: () => { cockpit.clearFilters(); cockpit.filterTo({ show: "mine" }); } },
+    { label: "Triage threads waiting on me", group: "Review", run: () => { cockpit.clearFilters(); cockpit.filterTo({ show: "mine" }); return cockpit.startTriage(); } },
     { label: `${sinceOn ? "Hide" : "Show"} what changed since I last saw it`, group: "Review", hint: "Alt+S", run: () => toggleSince() },
     { label: `Track changes: turn ${tracking ? "off" : "on"}`, group: "Command", run: toggleTrack },
     { label: "Save", group: "Command", hint: "Ctrl+S", run: () => saveFile(false) },

@@ -593,6 +593,48 @@ main {
   color: var(--faint);
 }
 
+/* Review progress */
+.progress-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 3px;
+  background: var(--hair);
+  overflow: hidden;
+}
+
+.progress-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s;
+}
+
+.item .meta .for-me {
+  color: var(--accent);
+}
+
+.hc-done {
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.dialog.wide {
+  width: min(720px, 92vw);
+}
+
+.summary-text {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
 /* Headers and footers (read-only) */
 .furniture {
   font-size: 0.8em;
