@@ -2019,6 +2019,12 @@ main {
   gap: 14px;
 }
 
+.tr-top button,
+.tr-count,
+.tr-tally {
+  white-space: nowrap;
+}
+
 .tr-top button {
   border: 1px solid var(--hair);
 }

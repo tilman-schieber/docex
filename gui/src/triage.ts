@@ -140,7 +140,7 @@ export function openTriage(items: Item[], scope: string, host: TriageHost, advic
     const top = h(
       "div",
       "tr-top",
-      h("span", "tr-title", `Triage · ${scope}${advice ? " · AI suggestions" : ""}`),
+      h("span", "tr-title", `${advice ? "AI triage" : "Triage"} · ${scope}`),
       h("span", "tr-count", summary ? `${items.length} items` : `${i + 1} / ${items.length}`),
       h("span", "tr-tally", `${count("accept")} ✓  ${count("reject")} ✗  ${count("resolve")} ◉  ${count("skip")} skipped`),
       h("span", "grow"),
