@@ -2346,3 +2346,106 @@ kbd {
     display: none;
   }
 }
+
+/* ------------------------------------------------------------------------ */
+/* Distraction-free mode: only the page. A bar slides in at the top edge. */
+
+body.zen #toolbar,
+body.zen #outline,
+body.zen #sidebar,
+body.zen #rail,
+body.zen #status {
+  display: none !important;
+}
+
+body.zen,
+body.zen #page-wrap {
+  background: var(--page);
+}
+
+body.zen #page-wrap {
+  padding: 40px 20px 40vh;
+}
+
+body.zen .page {
+  border-color: transparent;
+}
+
+#zen-bar {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  transform: translate(-50%, -8px);
+  z-index: 30;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s, transform 0.2s;
+}
+
+body.zen #zen-bar.peek,
+body.zen #zen-bar:hover {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
+}
+
+.zen-pill {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--chrome);
+  border: 1px solid var(--hair);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.3);
+}
+
+.zen-pill button {
+  border-color: transparent;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.zen-pill button.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.zen-pill button.x {
+  margin-left: 8px;
+}
+
+/* As if accepted: deletions gone, insertions and comment anchors plain text. */
+body.zen-clean .ProseMirror del,
+body.zen-clean .ProseMirror .since-del,
+body.zen-clean .ProseMirror .since-removed {
+  display: none;
+}
+
+body.zen-clean .ProseMirror ins.chg {
+  color: inherit;
+  background: none;
+  text-decoration: none;
+  opacity: 1;
+  cursor: text;
+}
+
+body.zen-clean .ProseMirror .fmtchg,
+body.zen-clean .ProseMirror .fmtchg[data-wid] {
+  text-decoration: none;
+  cursor: text;
+}
+
+body.zen-clean .ProseMirror .pfmtchg,
+body.zen-clean .ProseMirror .since-new {
+  box-shadow: none;
+  background: none;
+}
+
+body.zen-clean .ProseMirror .cmt,
+body.zen-clean .ProseMirror .since-ins,
+body.zen-clean .ProseMirror .hl {
+  background: none;
+  border-bottom: 0;
+  box-shadow: none;
+  outline: none;
+  cursor: text;
+}

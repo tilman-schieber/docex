@@ -375,6 +375,8 @@ const view = new EditorView($("#editor"), {
   },
   handleDOMEvents: {
     click(_v, e) {
+      // As if accepted, there are no changes or comments to click on.
+      if (zen === "clean") return false;
       const el = (e.target as HTMLElement).closest("ins.chg, del.chg, .fmtchg") as HTMLElement | null;
       if (el && el.dataset.wid) {
         showChangePopover(el);
@@ -1059,6 +1061,73 @@ document.getElementById("page-area")!.addEventListener("mousedown", () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Distraction-free mode: only the page, full screen. "marked" keeps changes
+// and comments visible; "clean" shows the text as if every change were accepted.
+
+type Zen = "marked" | "clean";
+let zen: Zen | null = null;
+/** Whether entering made the window full screen (so leaving undoes only that). */
+let zenFull = false;
+const zenBtn = (mode: Zen, label: string, tip: string) => {
+  const b = h("button", { onclick: () => setZen(mode) }, label);
+  b.dataset.zen = mode;
+  b.setAttribute("data-tip", tip);
+  return b;
+};
+const zenBar = h(
+  "div",
+  { id: "zen-bar" },
+  h(
+    "div",
+    { class: "zen-pill" },
+    zenBtn("marked", "Changes marked", "Show tracked changes and comments  Alt+V"),
+    zenBtn("clean", "As if accepted", "Show the text as if every change were accepted  Alt+V"),
+    (() => {
+      const b = h("button", { class: "x", onclick: () => setZen(null) }, "Leave");
+      b.setAttribute("data-tip", "Back to the full window  Esc or F11");
+      return b;
+    })(),
+  ),
+);
+document.body.append(zenBar);
+let peekTimer = 0;
+function peekZen(ms = 1600) {
+  zenBar.classList.add("peek");
+  clearTimeout(peekTimer);
+  peekTimer = window.setTimeout(() => zenBar.classList.remove("peek"), ms);
+}
+document.addEventListener("mousemove", (e) => {
+  if (zen && e.clientY < 40) peekZen();
+});
+
+function setZen(mode: Zen | null) {
+  if (mode === zen) return;
+  const was = zen;
+  zen = mode;
+  document.body.classList.toggle("zen", !!mode);
+  document.body.classList.toggle("zen-clean", mode === "clean");
+  for (const b of zenBar.querySelectorAll<HTMLElement>("[data-zen]")) b.classList.toggle("on", b.dataset.zen === mode);
+  if (mode) localStorage.setItem("docex-zen", mode);
+  const win = getCurrentWindow();
+  if (mode && !was) {
+    void win.isFullscreen().then((f) => {
+      if (f || zen === null) return;
+      zenFull = true;
+      return win.setFullscreen(true);
+    }).catch(() => {});
+  } else if (!mode && zenFull) {
+    zenFull = false;
+    void win.setFullscreen(false).catch(() => {});
+  }
+  hidePopover();
+  peekZen(mode && !was ? 2400 : 1600);
+  cockpit.refreshSoon();
+  view.focus();
+}
+const toggleZen = () => setZen(zen ? null : ((localStorage.getItem("docex-zen") as Zen) || "marked"));
+const switchZen = () => setZen(zen === "clean" ? "marked" : "clean");
+
 function updateToolbar() {
   const { $from, from, to, empty } = view.state.selection;
   const p = $from.parent;
@@ -1184,6 +1253,15 @@ function paletteEntries(): Entry[] {
     { label: "Open…", group: "Command", hint: "Ctrl+O", run: () => openFile() },
     { label: "New document", group: "Command", hint: "Ctrl+N", run: newFile },
     { label: "Toggle outline", group: "View", hint: "Ctrl+1", run: () => togglePanel("outline") },
+    ...(zen
+      ? [
+          { label: zen === "clean" ? "Show tracked changes and comments" : "Show the text as if every change were accepted", group: "View", hint: "Alt+V", run: switchZen },
+          { label: "Leave distraction-free mode", group: "View", hint: "F11", run: () => setZen(null) },
+        ]
+      : [
+          { label: "Distraction-free mode, changes marked", group: "View", keywords: "zen focus fullscreen writing", hint: "F11", run: () => setZen("marked") },
+          { label: "Distraction-free mode, as if accepted", group: "View", keywords: "zen focus fullscreen clean final reading", hint: "Alt+V", run: () => setZen("clean") },
+        ]),
     { label: "Check for updates", group: "docex", run: () => showUpdate(true) },
     updateChecksOn()
       ? { label: "Stop checking for updates", group: "docex", keywords: "update", run: () => { setUpdateChecks(false); update = null; renderStatus(); toast("docex won't check for updates any more."); } }
@@ -1228,9 +1306,21 @@ function paletteEntries(): Entry[] {
 // Startup
 
 document.addEventListener("keydown", (e) => {
-  if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key.toLowerCase() === "t" || e.key.toLowerCase() === "s")) {
+  if (e.key === "F11") {
     e.preventDefault();
-    if (e.key.toLowerCase() === "t") void cockpit.startTriage();
+    toggleZen();
+    return;
+  }
+  // Esc leaves distraction-free mode, unless it closes something else first.
+  if (e.key === "Escape" && zen && (e.target as HTMLElement).closest?.(".ProseMirror") && document.getElementById("popover")!.hidden && !document.querySelector(".triage, #palette")) {
+    setZen(null);
+    return;
+  }
+  if (e.altKey && !e.ctrlKey && !e.metaKey && ["t", "s", "v"].includes(e.key.toLowerCase())) {
+    e.preventDefault();
+    const k = e.key.toLowerCase();
+    if (k === "t") void cockpit.startTriage();
+    else if (k === "v") switchZen();
     else toggleSince();
     return;
   }

@@ -4,6 +4,10 @@ All notable changes to docex. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+
+- **Distraction-free mode** (F11, or "Distraction-free mode" in the command palette): only the page, full screen. Show it with the changes marked, or as if every change were accepted, to read and edit the version everyone would end up with. Alt+V switches between the two, Esc or F11 leaves.
+
 ## [0.2.0] - 2026-10-30
 
 ### Added

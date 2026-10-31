@@ -350,6 +350,31 @@ try {
     check(!(await page.eval(`!!document.querySelector(".triage")`)), "triage closes");
     check((await count()) < before, `the two decided changes are gone (${before} → ${await count()})`);
   });
+
+  await scenario("distraction-free mode: changes marked, as if accepted, back", async () => {
+    const f = scratch(dir, "review.docx");
+    await page.open(f);
+    const shown = (sel) => page.eval(`getComputedStyle(document.querySelector(${JSON.stringify(sel)})).display !== "none"`);
+    const delShown = () => page.eval(`[...document.querySelectorAll(".ProseMirror del")].some((e) => getComputedStyle(e).display !== "none")`);
+    const insPlain = () => page.eval(`(() => { const e = document.querySelector(".ProseMirror ins.chg"); const s = getComputedStyle(e); return s.color === getComputedStyle(e.closest("p, li, td, .ProseMirror")).color && !s.textDecorationLine.includes("underline"); })()`);
+    await page.click(".ProseMirror p");
+    await page.key("F11");
+    check(await page.eval(`document.body.classList.contains("zen")`), "F11 enters");
+    check(!(await shown("#toolbar")) && !(await shown("#sidebar")) && !(await shown("#status")), "only the page shows");
+    check(await delShown(), "changes stay marked");
+    check(await page.eval(`window.__DOCEX_DEV__.calls.includes("plugin:window|set_fullscreen")`), "the window goes full screen");
+    await page.key("v", "Alt");
+    check(!(await delShown()), "as if accepted: deletions hidden");
+    check(await insPlain(), "as if accepted: insertions read as plain text");
+    await page.click(".ProseMirror ins.chg");
+    check(await page.eval(`document.getElementById("popover").hidden`), "no popover on accepted-looking text");
+    await page.key("Escape");
+    check(!(await page.eval(`document.body.classList.contains("zen")`)), "Esc leaves");
+    check((await shown("#toolbar")) && (await delShown()), "toolbar and markup are back");
+    await page.key("F11");
+    check(await page.eval(`document.body.classList.contains("zen-clean")`), "F11 comes back to the last view");
+    await page.key("F11");
+  });
 } finally {
   await close();
 }
