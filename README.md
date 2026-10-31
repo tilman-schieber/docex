@@ -50,6 +50,7 @@ docex diff a.docx b.docx              # what changed between two versions
 docex diff mine.docx theirs.docx --into --track   # a version sent back without tracked changes,
                                                   # as tracked changes by whoever saved it
 docex images report.docx --extract figs/   # the pictures: size, alt text, section; saved as files
+docex style report.docx --theme report   # a new look: fonts, spacing, page (see below)
 docex new notes.md -o notes.docx      # a new document from Markdown
 ```
 
@@ -63,7 +64,9 @@ Pictures are `![alt text](media/image1.png)`. Edit the alt text in place; add `{
 
 Things docex can't or shouldn't edit (a table of contents, shapes, charts, headers and footers) appear as clearly marked placeholders. Charts come with their data, so figures quoted in the text can be checked against them. Leave a placeholder alone and the content survives; delete it and it's deleted.
 
-Fonts, spacing and page layout are deliberately left out. New text takes on the formatting around it, so additions look native in Word.
+Fonts, spacing and page layout are deliberately left out of the Markdown. New text takes on the formatting around it, so additions look native in Word.
+
+The look comes from a **stylesheet** instead: a few lines of CSS (`body { font: 11pt/1.3 Georgia }`, `h1 { color: #1F3864 }`, `@page { size: A4 }`) that docex writes into Word's own built-in styles and the page setup. The document stays an ordinary Word file whose headings, table of contents and navigation pane work, in any language's Word. docex comes with four themes (report, classic, thesis, plain), takes your own `.css`, or copies the look of another document. See [docs/stylesheets.md](docs/stylesheets.md).
 
 ## Desktop app
 
@@ -78,6 +81,7 @@ Its focus is the part of working with Word documents that takes the most time: *
 - **What's new since last time.** docex remembers each version you've seen and highlights what's different, even when the others didn't track their changes.
 - **Write as well as review.** Markdown shortcuts while typing, equations, find and replace, spell checking.
 - **Pictures.** Paste a screenshot or drop picture files on the page. Click a picture to replace it (at the same width, tracked), resize it by its corner, edit its alt text or save it as a file. The AI can write alt text for every picture that has none, for you to check. Pictures the editor can't show (EMF, WMF) appear as a labelled box and stay in the file. Drop a .docx on the window to open it.
+- **A look, not a formatting chore.** The page shows the document in its own fonts, sizes, spacing and page size, as Word will. The palette button tries a theme on the page before you apply it; "Print colours" shows it on white paper.
 - **Distraction-free.** F11 shows only the page, full screen, either with the changes marked or as if every change were accepted (Alt+V switches): read the version everyone would end up with, and keep editing in it.
 - **An AI assistant that edits the document, not just the words.** It works on the same Markdown view as the CLI, so it can add real links, bold or highlight, turn paragraphs into headings or lists, edit tables and leave comments, on the selection or across the whole document. Everything comes back as tracked changes in your name, and one Undo takes it back. It can also go through other people's changes with you: triage starts with its suggestion for each one (accept, reject, or look closer) and a short reason.
 

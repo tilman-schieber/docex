@@ -44,6 +44,10 @@ Rules:
 - **Text boxes:** edit the paragraphs between `<!-- docex:textbox tbN -->` and `<!-- /docex:textbox -->`. Leave the marker lines alone.
 - **Content controls** (template fields such as customer or date, cover pages): edit the paragraphs between `<!-- docex:control bN Name -->` and `<!-- /docex:control -->`; leave the markers. Text that is still the placeholder ("Click here to enter text.") is replaced as a whole. Locked controls refuse edits.
 
+## The look
+
+Don't format text by hand to change how a document looks. `docex style FILE` prints its look as CSS; `docex style FILE --theme report|classic|thesis|plain|my.css|other.docx` gives it a new one through Word's built-in styles (fonts, sizes, spacing, colours, heading numbering, margins). The text is untouched, and Word doesn't track style changes, so ask the user before restyling a document that others are reviewing. The supported CSS is in docs/stylesheets.md.
+
 ## A version sent back without tracked changes
 
 `docex diff MINE.docx THEIRS.docx --into --track` writes THEIRS into MINE as tracked changes (by whoever last saved THEIRS, or `--author`). Both are compared as if their open changes were accepted, so the changes already open in MINE stay. Comments in THEIRS don't come along. Without `--into`, `docex diff` prints the differences.

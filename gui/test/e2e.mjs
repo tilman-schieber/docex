@@ -124,7 +124,23 @@ try {
   });
 
   await scenario("underline and highlight from the toolbar", async () => {
-    await page.click(".ProseMirror p", "split by work package", { clickCount: 2 });
+    // Double-click the word itself (the paragraph's middle may be past its end).
+    const [wx, wy] = await page.eval(`(() => {
+      const p = [...document.querySelectorAll(".ProseMirror p")].find((e) => e.textContent.includes("split by work package"));
+      const t = [...p.childNodes].find((n) => n.nodeType === 3 && n.textContent.includes("work"));
+      const r = document.createRange();
+      const i = t.textContent.indexOf("work");
+      r.setStart(t, i);
+      r.setEnd(t, i + 4);
+      const b = r.getBoundingClientRect();
+      return [b.left + b.width / 2, b.top + b.height / 2];
+    })()`);
+    await page.mouse("mouseMoved", wx, wy);
+    await page.mouse("mousePressed", wx, wy, { clickCount: 1 });
+    await page.mouse("mouseReleased", wx, wy, { clickCount: 1 });
+    await page.mouse("mousePressed", wx, wy, { clickCount: 2 });
+    await page.mouse("mouseReleased", wx, wy, { clickCount: 2 });
+    await page.settle();
     await page.click('#toolbar [data-tip^="Underline"]');
     await page.click('#toolbar [data-tip^="Highlight"]');
     await page.key("s", "Control");
@@ -480,6 +496,42 @@ try {
     const other = scratch(dir, "review.docx");
     await page.eval(`window.__DOCEX_DEV__.emit("tauri://drag-drop", { paths: [${JSON.stringify(other)}], position: { x: 300, y: 300 } })`);
     await page.waitFor(`document.querySelector("#status .path").textContent.endsWith("review.docx")`);
+  });
+
+  await scenario("document look: preview a theme, cancel, apply, undo, saved as Word styles", async () => {
+    const f = scratch(dir, "review.docx");
+    await page.open(f);
+    const look = () => page.eval(`document.getElementById("doc-look").textContent`);
+    const own = await look();
+    check(own.includes(".page.look") && (await page.eval(`document.getElementById("editor").classList.contains("look")`)), "the page shows the document's own look");
+    const openPicker = async () => {
+      await page.key("p", "Control");
+      await page.type("document look");
+      await page.key("Enter");
+      await page.waitFor(`document.getElementById("looks")`);
+    };
+    await openPicker();
+    await page.click("#looks .lk-row", "Plain");
+    check((await look()).includes("Arial"), "previewing shows the theme on the page");
+    await page.key("Escape");
+    check(!(await page.eval(`document.getElementById("looks")`)) && (await look()) === own, "Esc goes back to the document's look");
+    await openPicker();
+    await page.click("#looks .lk-row", "Plain");
+    await page.click("#looks button", "Apply");
+    await page.waitFor(`document.getElementById("doc-look").textContent.includes("Arial") && !document.getElementById("looks")`);
+    check((await toast()).includes("New look"), `toast: ${await toast()}`);
+    await page.click("#toasts .toast-act", "Undo");
+    await page.waitFor(`!document.getElementById("doc-look").textContent.includes("Arial")`);
+    await openPicker();
+    await page.click("#looks .lk-row", "Plain");
+    await page.key("Enter");
+    await page.waitFor(`document.getElementById("doc-look").textContent.includes("Arial")`);
+    await page.key("s", "Control");
+    await page.waitFor(`!document.querySelector("#status .dirty")`);
+    const css = execFileSync(join(root, "target/debug/docex"), ["style", f], { encoding: "utf8" });
+    check(css.includes("font-family: Arial") && css.includes("size: A4"), `saved look:\n${css}`);
+    const md = execFileSync(join(root, "target/debug/docex"), ["cat", f], { encoding: "utf8" });
+    check(md === execFileSync(join(root, "target/debug/docex"), ["cat", join(root, "tests/fixtures/review.docx")], { encoding: "utf8" }), "the text and its changes are untouched");
   });
 } finally {
   await close();

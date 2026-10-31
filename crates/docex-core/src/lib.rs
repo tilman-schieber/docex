@@ -32,6 +32,7 @@ pub mod render;
 pub mod review;
 pub mod revisions;
 pub mod styles;
+pub mod stylesheet;
 pub mod template;
 pub mod xml;
 
@@ -83,6 +84,8 @@ const SETTINGS_ORDER: &[&str] = &[
 ];
 const REL_FOOTNOTES: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes";
 const CT_FOOTNOTES: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml";
+const REL_STYLES: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles";
+const CT_STYLES: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml";
 const REL_NUMBERING: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering";
 const CT_NUMBERING: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml";
 
@@ -136,6 +139,8 @@ impl NotePart {
 #[derive(Default)]
 struct Dirty {
     dom: bool,
+    /// Styles, theme fonts: already written to the package.
+    styles: bool,
     rels: bool,
     comments: bool,
     numbering: bool,
@@ -1230,6 +1235,70 @@ impl Docx {
         out
     }
 
+    /// A stylesheet by name (a built-in theme), from a .css file, or the look
+    /// of another document (.docx, .dotx); with warnings about what was ignored.
+    pub fn load_stylesheet(spec: &str) -> Result<(stylesheet::Stylesheet, Vec<String>)> {
+        if let Some(css) = stylesheet::builtin(spec) {
+            return Ok(stylesheet::parse(css));
+        }
+        let path = Path::new(spec);
+        if !path.exists() {
+            let names: Vec<&str> = stylesheet::BUILTIN.iter().map(|(n, _, _)| *n).collect();
+            bail!("no theme or file \"{spec}\" (built-in: {})", names.join(", "));
+        }
+        if matches!(path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(), Some("docx" | "dotx" | "docm")) {
+            return Ok((Docx::open(path)?.stylesheet(), Vec::new()));
+        }
+        let css = std::fs::read_to_string(path).with_context(|| format!("reading {spec}"))?;
+        Ok(stylesheet::parse(&css))
+    }
+
+    /// The document's look (its built-in styles and page) as a stylesheet.
+    pub fn stylesheet(&self) -> stylesheet::Stylesheet {
+        let part = |kind: &str| self.rels.find_by_type(kind).and_then(|r| self.pkg.read_xml_opt(&self.rels.resolve(r.target)).ok().flatten());
+        stylesheet::read(part("/styles").as_ref(), part("/theme").as_ref(), self.body())
+    }
+
+    /// Give the document the look of `sheet`: its built-in styles, font
+    /// theme, heading numbering and page setup. The text and its direct
+    /// formatting are untouched. Word doesn't track changes to styles.
+    pub fn apply_stylesheet(&mut self, sheet: &stylesheet::Stylesheet) -> Result<()> {
+        let part = match self.rels.find_by_type("/styles") {
+            Some(r) => self.rels.resolve(r.target),
+            None => {
+                self.rels.add(REL_STYLES, "styles.xml", false);
+                self.dirty.rels = true;
+                self.pkg.ensure_content_type(Some("word/styles.xml"), None, CT_STYLES)?;
+                "word/styles.xml".to_string()
+            }
+        };
+        let mut doc = match self.pkg.read_xml_opt(&part)? {
+            Some(d) => d,
+            None => Document::parse(&format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<w:styles xmlns:w=\"{}\"></w:styles>", package::W_NS))?,
+        };
+        let (number, _) = stylesheet::write_styles(&mut doc.root, sheet);
+        if let Some(n) = self.numbering.as_mut() {
+            if stylesheet::number_headings(&mut doc.root, &mut n.root, &number) {
+                self.dirty.numbering = true;
+            }
+        }
+        self.pkg.write_xml(&part, &doc);
+        if let Some(r) = self.rels.find_by_type("/theme") {
+            let tp = self.rels.resolve(r.target);
+            if let Some(mut t) = self.pkg.read_xml_opt(&tp)? {
+                if stylesheet::write_theme_fonts(&mut t.root, sheet) {
+                    self.pkg.write_xml(&tp, &t);
+                }
+            }
+        }
+        if stylesheet::write_page(self.body_mut(), &sheet.page) {
+            self.dirty.dom = true;
+        }
+        self.styles = Styles::load(Some(&doc), self.numbering.as_ref());
+        self.dirty.styles = true;
+        Ok(())
+    }
+
     /// The bytes of a media file, by its target (`media/image1.png`).
     pub fn media(&self, target: &str) -> Result<Vec<u8>> {
         self.pkg.read(&self.rels.resolve(target))
@@ -1281,7 +1350,7 @@ impl Docx {
 
     pub fn is_dirty(&self) -> bool {
         let d = &self.dirty;
-        d.dom || d.rels || d.comments || d.numbering || self.notes.iter().any(|n| n.dirty || n.rels_dirty)
+        d.dom || d.styles || d.rels || d.comments || d.numbering || self.notes.iter().any(|n| n.dirty || n.rels_dirty)
     }
 
     /// Serialize, writing only the parts that changed.

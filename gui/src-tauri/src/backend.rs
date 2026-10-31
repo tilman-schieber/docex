@@ -52,6 +52,23 @@ pub struct View {
     lang: Option<String>,
     /// Whether the last review decision can be undone.
     can_undo: bool,
+    /// The document's look (fonts, spacing, page) as CSS for the editor.
+    look: String,
+}
+
+/// A look to preview: CSS for the editor, and what the stylesheet couldn't say.
+#[derive(Serialize)]
+pub struct Look {
+    look: String,
+    warnings: Vec<String>,
+}
+
+/// A built-in document theme, for the picker.
+#[derive(Serialize)]
+pub struct DocTheme {
+    name: String,
+    about: String,
+    look: String,
 }
 
 fn mime(name: &str) -> &'static str {
@@ -101,6 +118,7 @@ fn view(s: &Session, warnings: Vec<String>) -> Result<View, String> {
         lang: doc.language(),
         warnings,
         can_undo: !s.undo.is_empty(),
+        look: doc.stylesheet().editor_css(),
     })
 }
 
@@ -365,6 +383,43 @@ pub fn theme() -> Theme {
 pub fn image_data(path: String) -> Result<String, String> {
     let bytes = std::fs::read(&path).map_err(err)?;
     Ok(data_url(&path, &bytes))
+}
+
+/// The built-in themes with their look in the editor.
+pub fn themes() -> Vec<DocTheme> {
+    docex_core::stylesheet::BUILTIN
+        .iter()
+        .map(|(name, about, css)| DocTheme { name: name.to_string(), about: about.to_string(), look: docex_core::stylesheet::parse(css).0.editor_css() })
+        .collect()
+}
+
+/// How a theme (built-in name, .css file or .docx) would look, before applying it.
+pub fn theme_look(theme: String) -> Result<Look, String> {
+    let (sheet, warnings) = Docx::load_stylesheet(&theme).map_err(err)?;
+    Ok(Look { look: sheet.editor_css(), warnings })
+}
+
+/// Give the document a theme's look; undoable like a review decision.
+pub fn apply_theme(state: &AppState, model: DocModel, tracked: bool, theme: String) -> Result<View, String> {
+    let (sheet, theme_warnings) = Docx::load_stylesheet(&theme).map_err(err)?;
+    with_session(state, Some(&model), tracked, |s, warnings| {
+        let snap = s.doc.to_bytes().map_err(err)?;
+        s.doc.apply_stylesheet(&sheet).map_err(err)?;
+        warnings.extend(theme_warnings);
+        s.dirty = true;
+        s.undo.push(snap);
+        if s.undo.len() > UNDO_DEPTH {
+            s.undo.remove(0);
+        }
+        Ok(())
+    })
+}
+
+/// Save the document's look as a stylesheet.
+pub fn save_theme(state: &AppState, dest: String) -> Result<(), String> {
+    let guard = state.session.lock().unwrap();
+    let s = guard.as_ref().ok_or("no document open")?;
+    std::fs::write(&dest, s.doc.stylesheet().to_css()).map_err(err)
 }
 
 /// The bytes of a picture: a media file of the open document (`media/image1.png`)

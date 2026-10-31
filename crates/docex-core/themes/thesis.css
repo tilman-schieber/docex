@@ -1,0 +1,88 @@
+/* docex theme "thesis": Cambria 12 pt, 1.5 line spacing, justified, numbered
+   headings, each chapter on a new page. Margins as many universities ask. */
+
+@page {
+  size: A4;
+  margin: 2.5cm 2.5cm 2cm 3cm;
+}
+
+body {
+  font-family: Cambria, Caladea, serif;
+  font-size: 12pt;
+  line-height: 1.5;
+  color: #000000;
+  text-align: justify;
+  margin-top: 0;
+  margin-bottom: 6pt;
+}
+
+.title {
+  font-size: 22pt;
+  font-weight: bold;
+  text-align: center;
+  margin-top: 0;
+  margin-bottom: 12pt;
+}
+
+.subtitle {
+  font-size: 14pt;
+  text-align: center;
+  margin-top: 0;
+  margin-bottom: 24pt;
+}
+
+h1 {
+  font-size: 16pt;
+  font-weight: bold;
+  text-align: left;
+  margin-top: 0;
+  margin-bottom: 18pt;
+  break-before: page;
+  counter-increment: chapter;
+}
+
+h2 {
+  font-size: 13pt;
+  font-weight: bold;
+  text-align: left;
+  margin-top: 18pt;
+  margin-bottom: 6pt;
+  counter-increment: section;
+}
+
+h3 {
+  font-size: 12pt;
+  font-weight: bold;
+  text-align: left;
+  margin-top: 12pt;
+  margin-bottom: 6pt;
+  counter-increment: subsection;
+}
+
+blockquote {
+  font-size: 11pt;
+  line-height: 1.15;
+  margin-left: 1cm;
+}
+
+figcaption {
+  font-size: 10pt;
+  line-height: 1.15;
+  text-align: left;
+  margin-top: 4pt;
+  margin-bottom: 12pt;
+}
+
+pre {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 10pt;
+  line-height: 1;
+  text-align: left;
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+a {
+  color: #000000;
+  text-decoration: none;
+}

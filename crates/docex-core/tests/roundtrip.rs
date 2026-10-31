@@ -1073,3 +1073,49 @@ fn a_moved_picture_keeps_its_size() {
     assert_eq!(ims.len(), 1);
     assert_eq!((ims[0].width_emu, ims[0].height_emu), (Some(508_000), Some(254_000)));
 }
+
+#[test]
+fn a_stylesheet_changes_the_look_not_the_text() {
+    use docex_core::stylesheet::{builtin, parse, Line, Target};
+    let mut d = fixture("review.docx");
+    let before = d.render(View::Review);
+    let (thesis, warnings) = parse(builtin("thesis").unwrap());
+    assert!(warnings.is_empty());
+    d.apply_stylesheet(&thesis).unwrap();
+    assert!(d.is_dirty());
+    let d = reopen(&mut d);
+    assert_eq!(d.render(View::Review), before, "the text and its changes stay");
+    assert!(d.review().items.iter().all(|i| i.author != "Me"), "nothing new to review");
+    // Read back: what the theme said.
+    let look = d.stylesheet();
+    let body = &look.rules[&Target::Body];
+    assert_eq!((body.font().as_deref(), body.size, body.line, body.align.as_deref()), (Some("Cambria"), Some(12.0), Some(Line::Multiple(1.5)), Some("justify")));
+    let h1 = &look.rules[&Target::Heading(1)];
+    assert_eq!((h1.size, h1.bold, h1.page_break, h1.numbered), (Some(16.0), Some(true), Some(true), Some(true)));
+    let [_, _, _, left] = look.page.margin.unwrap();
+    assert!((left - 85.04).abs() < 0.1, "3cm left margin: {left}");
+    // Numbered headings, as Word numbers them.
+    let md = d.render_numbered(View::Review);
+    assert!(md.contains("# 1 Quarterly Research Report") && md.contains("## 1.1 Summary"), "{md}");
+}
+
+#[test]
+fn a_stylesheet_can_come_from_another_document() {
+    use docex_core::stylesheet::{builtin, parse, Target};
+    let mut a = fixture("rich.docx");
+    a.apply_stylesheet(&parse(builtin("classic").unwrap()).0).unwrap();
+    let a = reopen(&mut a);
+    // Take a's look over to b, through CSS and back.
+    let css = a.stylesheet().to_css();
+    let (sheet, warnings) = parse(&css);
+    assert!(warnings.is_empty(), "{warnings:?}\n{css}");
+    let mut b = fixture("review.docx");
+    b.apply_stylesheet(&sheet).unwrap();
+    let b = reopen(&mut b);
+    let (la, lb) = (a.stylesheet(), b.stylesheet());
+    for t in [Target::Body, Target::Heading(1), Target::Heading(2), Target::Quote, Target::Caption] {
+        let (x, y) = (&la.rules[&t], &lb.rules[&t]);
+        assert_eq!((x.font(), x.size, x.bold, x.italic, x.small_caps, x.color.clone(), x.align.clone()), (y.font(), y.size, y.bold, y.italic, y.small_caps, y.color.clone(), y.align.clone()), "{t:?}");
+    }
+    assert_eq!(la.page, lb.page);
+}

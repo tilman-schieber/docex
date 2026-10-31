@@ -42,6 +42,7 @@ import {
   Italic,
   Link,
   MessageSquarePlus,
+  Palette,
   PanelLeft,
   PanelRight,
   Redo2,
@@ -72,6 +73,7 @@ import { trackTransaction } from "./track";
 import { setGraphics } from "./chart";
 import { createFindBar, findPlugin } from "./find";
 import { describeAll, hideImageMenu, imageNodeView, listenForDrops, pastePicture, pickPictures, picturesWithoutAlt, saveAllPictures, showImageMenu, type ImageHost } from "./images";
+import { lookOn, openPicker, printOn, saveLook, setLookOn, setPrint, showLook, type LookHost } from "./looks";
 import { checkUpdate, dismissed, dismissUpdate, openRelease, setUpdateChecks, updateChecksOn, type Update } from "./update";
 import * as reviewLog from "./review-log";
 import type { Change, Comment, HeaderFooter, View } from "./types";
@@ -424,6 +426,12 @@ const imageHost: ImageHost = {
   },
 };
 
+const lookHost: LookHost = {
+  toast,
+  apply: (theme) => call("apply_theme", { theme, label: "New look for the document" }),
+  relayout: () => cockpit.refreshSoon(),
+};
+
 // "Since you last saw it": the snapshot from the previous visit, for this session.
 let sinceBase: Snapshot | null = null;
 let sinceRes: SinceResult | null = null;
@@ -635,6 +643,7 @@ function load(v: View, keepSelection = true) {
   current = v;
   tracking = v.track;
   for (const [k, url] of Object.entries(v.images)) imageUrls.set(k, url);
+  showLook(v.look ?? "");
   setGraphics(v.model.graphics);
   reviewLog.resetFor(v.path);
   if (v.lang !== spellLang) {
@@ -1034,6 +1043,7 @@ $("#toolbar").append(
   tb(MessageSquarePlus, "Comment on the selected text", addComment),
   tableCtx,
   sep(),
+  tb(Palette, "Document look: fonts, spacing and page from a theme or your stylesheet", () => openPicker(lookHost)),
   tb(Sparkles, "AI: rewrite, ask, summarize  Ctrl+J", openAIMenu),
   tb(CommandIcon, "Command palette  Ctrl+P", () => openPalette(paletteEntries())),
   h("span", { class: "grow" }),
@@ -1284,6 +1294,12 @@ function paletteEntries(): Entry[] {
     { label: "Open…", group: "Command", hint: "Ctrl+O", run: () => openFile() },
     { label: "New document", group: "Command", hint: "Ctrl+N", run: newFile },
     { label: "Toggle outline", group: "View", hint: "Ctrl+1", run: () => togglePanel("outline") },
+    { label: "Document look: choose a theme or stylesheet…", group: "Format", keywords: "style stylesheet theme template formatvorlagen fonts css design", run: () => openPicker(lookHost) },
+    { label: "Save this document's look as CSS…", group: "Format", keywords: "stylesheet theme export", run: () => saveLook(lookHost) },
+    lookOn()
+      ? { label: "Show the page in the editor's fonts", group: "View", keywords: "look styles", run: () => setLookOn(lookHost, false) }
+      : { label: "Show the page as the document is styled", group: "View", keywords: "look styles fonts", run: () => setLookOn(lookHost, true) },
+    { label: `Print colours (white page): turn ${printOn() ? "off" : "on"}`, group: "View", keywords: "look paper light", run: () => setPrint(lookHost, !printOn()) },
     ...(zen
       ? [
           { label: zen === "clean" ? "Show tracked changes and comments" : "Show the text as if every change were accepted", group: "View", hint: "Alt+V", run: switchZen },

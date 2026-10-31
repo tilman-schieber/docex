@@ -92,6 +92,26 @@ fn theme() -> Theme {
 }
 
 #[tauri::command]
+fn themes() -> Vec<backend::DocTheme> {
+    backend::themes()
+}
+
+#[tauri::command]
+fn theme_look(theme: String) -> Result<backend::Look, String> {
+    backend::theme_look(theme)
+}
+
+#[tauri::command]
+fn apply_theme(state: State<AppState>, model: DocModel, tracked: bool, theme: String) -> Result<View, String> {
+    backend::apply_theme(&state, model, tracked, theme)
+}
+
+#[tauri::command]
+fn save_theme(state: State<AppState>, dest: String) -> Result<(), String> {
+    backend::save_theme(&state, dest)
+}
+
+#[tauri::command]
 fn save_image(state: State<AppState>, src: String, dest: String) -> Result<(), String> {
     backend::save_image(&state, src, dest)
 }
@@ -317,6 +337,10 @@ fn main() {
             save,
             image_data,
             save_image,
+            themes,
+            theme_look,
+            apply_theme,
+            save_theme,
             save_images,
             keep_pasted,
             theme,

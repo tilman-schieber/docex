@@ -6,6 +6,8 @@ All notable changes to docex. The format follows [Keep a Changelog](https://keep
 
 ### Added
 
+- **Stylesheets.** A document's look as a few lines of CSS, written into Word's own built-in styles (Normal, Heading 1–6, Title, Quote, Caption, …) and the page setup, so the result is an ordinary Word file. Four themes come with docex (report, classic, thesis, plain); your own `.css` works, and so does another .docx whose look to copy. `docex style FILE --theme NAME`, `docex style FILE` (the look as CSS), `docex style --list`, `docex new --theme`. The text and its tracked changes stay as they are. See docs/stylesheets.md.
+- **The page as Word will show it.** The editor shows the document in its own fonts, sizes, spacing and page size. The palette button in the toolbar previews a theme on the page before applying it (Undo takes it back); "Print colours" shows a white page with the document's colours; "Save this document's look as CSS…" starts a theme of your own.
 - **Pictures in the app.** Paste a screenshot, or drop picture files where they should go. Click a picture for its menu: replace it (the new one takes the old one's width and alt text, as a tracked replacement), edit its alt text, save it as a file, delete it; drag its corner to resize. Pictures show at their size on the page. WebP, BMP and SVG files are converted to PNG on the way in; pictures the editor can't show (EMF, WMF) appear as a labelled box instead of a broken image.
 - **Alt text by the AI.** "Write alt text for pictures without one" in the command palette sends each picture with the text around it to the AI, then lists the suggestions to check and edit before they go in. "Describe with AI" in a picture's menu does it for one.
 - **Open a document by dropping it** on the window.

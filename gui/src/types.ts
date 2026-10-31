@@ -124,4 +124,6 @@ export interface View {
   lang?: string | null;
   /** Whether the last review decision can be undone (`undo_review`). */
   can_undo: boolean;
+  /** The document's look (fonts, spacing, page) as CSS for the editor. */
+  look: string;
 }

@@ -160,8 +160,30 @@ enum Cmd {
         /// Take styles, page setup, headers and footers from this .docx.
         #[arg(long)]
         template: Option<PathBuf>,
+        /// Then give it this look: a built-in theme (see `docex style --list`),
+        /// a .css file, or another .docx to look like.
+        #[arg(long)]
+        theme: Option<String>,
         #[arg(long)]
         author: Option<String>,
+    },
+    /// The document's look as CSS, or give it another one with --theme.
+    /// Only styles and the page change (fonts, sizes, spacing, colours,
+    /// heading numbering, margins): Word's built-in styles, so the document
+    /// stays an ordinary Word file. The text is untouched; Word doesn't track
+    /// style changes.
+    Style {
+        /// The document (not needed with --list).
+        file: Option<PathBuf>,
+        /// A built-in theme (report, classic, thesis, plain), a .css file, or
+        /// another .docx whose look to take.
+        #[arg(long)]
+        theme: Option<String>,
+        /// List the built-in themes.
+        #[arg(long)]
+        list: bool,
+        #[command(flatten)]
+        out: OutArgs,
     },
     /// Show or switch the document's Track Changes setting (as in Word).
     /// `edit`, `apply` and `diff --track` follow it unless --track/--untracked is given.
@@ -238,6 +260,15 @@ fn author(explicit: Option<&str>) -> String {
         }
     }
     std::env::var("USER").unwrap_or_else(|_| "docex".into())
+}
+
+/// A theme by name, .css file or .docx to take the look of; warnings on stderr.
+fn load_theme(t: &str) -> Result<docex_core::stylesheet::Stylesheet> {
+    let (sheet, warnings) = Docx::load_stylesheet(t)?;
+    for w in warnings {
+        eprintln!("warning: {w}");
+    }
+    Ok(sheet)
 }
 
 fn save(doc: &mut Docx, src: &Path, out: &OutArgs) -> Result<()> {
@@ -487,11 +518,33 @@ fn main() -> Result<()> {
             }
             save(&mut doc, &file, &out)?;
         }
-        Cmd::New { markdown, output, template, author: a } => {
+        Cmd::Style { file, theme, list, out } => {
+            if list {
+                for (name, about, _) in docex_core::stylesheet::BUILTIN {
+                    println!("{name:<8}  {about}");
+                }
+                return Ok(());
+            }
+            let Some(file) = file else { bail!("which document? (or --list for the themes)") };
+            let mut doc = Docx::open(&file)?;
+            match theme {
+                None => print!("{}", doc.stylesheet().to_css()),
+                Some(t) => {
+                    let sheet = load_theme(&t)?;
+                    doc.apply_stylesheet(&sheet)?;
+                    save(&mut doc, &file, &out)?;
+                    eprintln!("styled with {t}");
+                }
+            }
+        }
+        Cmd::New { markdown, output, template, theme, author: a } => {
             let md = read_md(&markdown)?;
             let (mut doc, report) = Docx::new_from_markdown(&md, template.as_deref(), &author(a.as_deref()), &base_of(&markdown))?;
             for w in &report.warnings {
                 eprintln!("warning: {w}");
+            }
+            if let Some(t) = theme {
+                doc.apply_stylesheet(&load_theme(&t)?)?;
             }
             std::fs::write(&output, doc.to_bytes()?)?;
             eprintln!("wrote {}", output.display());
