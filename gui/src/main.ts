@@ -35,6 +35,7 @@ import {
   ChevronDown,
   Code,
   createElement,
+  Ellipsis,
   FilePlus,
   FolderOpen,
   Highlighter,
@@ -1022,36 +1023,129 @@ const tableCtx = h("span", { class: "tb-ctx" }, sep(), ...tableButtons.map(([b])
 const trackSwitch = h("button", { class: "track-switch", onclick: () => void toggleTrack() }, h("span", { class: "knob" }), h("span", { class: "lbl" }, "Track changes"));
 trackSwitch.dataset.tip = "Track Changes: record your edits as suggestions others can accept or reject\n(Word's setting, saved in the document)";
 
+/** A group of toolbar items that folds into the More menu when the window is
+ *  too narrow; lower `fold` goes first, equal ones go together. */
+const grp = (fold: number, ...kids: Node[]) => {
+  const g = h("span", { class: "tb-grp" }, ...kids);
+  g.dataset.fold = String(fold);
+  return g;
+};
+
+const moreBtn = tb(Ellipsis, "More", () => toggleMore());
+moreBtn.classList.add("tb-more");
+const more = h("div", { id: "more-menu", hidden: true });
+document.body.append(more);
+
 $("#toolbar").append(
   h("span", { class: "brand" }, "docex"),
-  tb(FilePlus, "New document  Ctrl+N", newFile),
+  grp(1, tb(FilePlus, "New document  Ctrl+N", newFile)),
   tb(FolderOpen, "Open a .docx  Ctrl+O", () => openFile()),
   saveBtn,
-  tb(SaveAll, "Save as  Ctrl+Shift+S", () => saveFile(true)),
+  grp(1, tb(SaveAll, "Save as  Ctrl+Shift+S", () => saveFile(true))),
+  grp(
+    6,
+    sep(),
+    tb(Undo2, "Undo  Ctrl+Z  (also takes back the last accept, reject or resolve)", () => undoAny(view.state, view.dispatch)),
+    tb(Redo2, "Redo  Ctrl+Y", () => redo(view.state, view.dispatch)),
+  ),
+  grp(7, sep(), styles),
+  grp(8, sep(), ...markButtons.slice(0, 2).map(([b]) => b)),
+  grp(4, ...markButtons.slice(2).map(([b]) => b)),
+  grp(
+    2,
+    sep(),
+    tb(Image, "Insert pictures  or paste or drop them on the page", insertImage),
+    tb(Table, "Insert a 3×3 table", insertTable),
+    tb(Asterisk, "Insert a footnote at the cursor", insertFootnote),
+    tb(Sigma, "Insert a formula  or type $…$ / $$…$$", () => insertMath()),
+    tb(MessageSquarePlus, "Comment on the selected text", addComment),
+  ),
+  grp(3, tableCtx),
   sep(),
-  tb(Undo2, "Undo  Ctrl+Z  (also takes back the last accept, reject or resolve)", () => undoAny(view.state, view.dispatch)),
-  tb(Redo2, "Redo  Ctrl+Y", () => redo(view.state, view.dispatch)),
-  sep(),
-  styles,
-  sep(),
-  ...markButtons.map(([b]) => b),
-  sep(),
-  tb(Image, "Insert pictures  or paste or drop them on the page", insertImage),
-  tb(Table, "Insert a 3×3 table", insertTable),
-  tb(Asterisk, "Insert a footnote at the cursor", insertFootnote),
-  tb(Sigma, "Insert a formula  or type $…$ / $$…$$", () => insertMath()),
-  tb(MessageSquarePlus, "Comment on the selected text", addComment),
-  tableCtx,
-  sep(),
-  tb(Palette, "Document look: fonts, spacing and page from a theme or your stylesheet", () => openPicker(lookHost)),
+  grp(5, tb(Palette, "Document look: fonts, spacing and page from a theme or your stylesheet", () => openPicker(lookHost))),
   tb(Sparkles, "AI: rewrite, ask, summarize  Ctrl+J", openAIMenu),
-  tb(CommandIcon, "Command palette  Ctrl+P", () => openPalette(paletteEntries())),
+  grp(5, tb(CommandIcon, "Command palette  Ctrl+P", () => openPalette(paletteEntries()))),
+  moreBtn,
   h("span", { class: "grow" }),
   trackSwitch,
   sep(),
   panelToggle("outline", PanelLeft, "Show or hide the outline  Ctrl+1"),
   panelToggle("sidebar", PanelRight, "Show or hide changes and comments  Ctrl+2"),
 );
+
+/** Fit the toolbar to the window: first drop the name and the switch's label,
+ *  then fold groups into the More menu, least used first. */
+function fitToolbar() {
+  const bar = $("#toolbar");
+  const groups = [...bar.querySelectorAll<HTMLElement>(".tb-grp")];
+  const steps = [...new Set(groups.map((g) => +g.dataset.fold!))].sort((a, b) => a - b);
+  bar.classList.remove("tight");
+  for (const g of groups) g.classList.remove("folded");
+  moreBtn.hidden = true;
+  const over = () => bar.scrollWidth > bar.clientWidth + 1;
+  if (!over()) return closeMore();
+  bar.classList.add("tight");
+  for (const step of steps) {
+    if (!over()) break;
+    moreBtn.hidden = false;
+    for (const g of groups) if (+g.dataset.fold! === step) g.classList.add("folded");
+  }
+  if (!more.hidden) openMore();
+}
+
+function closeMore() {
+  more.hidden = true;
+  moreBtn.classList.remove("active");
+}
+
+function toggleMore() {
+  if (more.hidden) openMore();
+  else closeMore();
+}
+
+/** The folded groups' commands as a menu, in toolbar order, with their current state. */
+function openMore() {
+  const rows: Node[] = [];
+  const item = (ic: Node | null, label: string, keys: string, run: () => void, on = false, off = false) => {
+    const b = h("button", { class: "mm-row", disabled: off, onmousedown: (e: MouseEvent) => e.preventDefault(), onclick: () => { closeMore(); run(); } });
+    b.classList.toggle("active", on);
+    b.append(ic ?? h("span", { class: "ico" }), h("span", { class: "mm-lbl" }, label), h("span", { class: "mm-keys" }, keys));
+    return b;
+  };
+  for (const g of document.querySelectorAll<HTMLElement>("#toolbar .tb-grp.folded")) {
+    if (g.contains(tableCtx) && !tableCtx.classList.contains("show")) continue;
+    if (rows.length) rows.push(h("div", { class: "mm-sep" }));
+    if (g.contains(styles)) {
+      rows.push(h("div", { class: "mm-head" }, "Paragraph style"));
+      for (const o of kindSelect.options)
+        rows.push(item(null, o.text, "", () => { kindSelect.value = o.value; kindSelect.dispatchEvent(new Event("change")); }, o.value === kindSelect.value, kindSelect.disabled));
+      continue;
+    }
+    for (const b of g.querySelectorAll<HTMLButtonElement>(".tb")) {
+      const [label, ...rest] = (b.dataset.tip ?? "").split(/ {2}/);
+      const keys = rest.find((r) => /^(Ctrl|Alt|Shift)\+/.test(r)) ?? "";
+      const lbl = b.querySelector(".lbl")?.textContent;
+      rows.push(item(b.querySelector("svg")!.cloneNode(true), lbl && !label.includes(lbl) ? `${label} (${lbl})` : label, keys, () => b.click(), b.classList.contains("active"), b.disabled));
+    }
+  }
+  more.replaceChildren(...rows);
+  more.hidden = false;
+  moreBtn.classList.add("active");
+  const r = moreBtn.getBoundingClientRect();
+  more.style.top = `${r.bottom + 4}px`;
+  more.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - more.offsetWidth - 8))}px`;
+}
+
+document.addEventListener("mousedown", (e) => {
+  if (!more.hidden && !(e.target as HTMLElement).closest("#more-menu, .tb-more")) closeMore();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !more.hidden) {
+    closeMore();
+    e.stopPropagation();
+  }
+}, true);
+new ResizeObserver(() => fitToolbar()).observe($("#toolbar"));
 
 function panelToggle(id: string, ic: IconNode, tip: string) {
   const b = tb(ic, tip, () => togglePanel(id));
@@ -1178,7 +1272,10 @@ function updateToolbar() {
     b.classList.toggle("active", active);
   }
   const inTable = isInTable(view.state);
-  tableCtx.classList.toggle("show", inTable);
+  if (tableCtx.classList.contains("show") !== inTable) {
+    tableCtx.classList.toggle("show", inTable);
+    fitToolbar();
+  }
   if (inTable) for (const [b, cmd] of tableButtons) b.disabled = !cmd(view.state);
   trackSwitch.classList.toggle("on", tracking);
   saveBtn.querySelector(".dot")?.remove();

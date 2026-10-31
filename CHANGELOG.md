@@ -21,6 +21,7 @@ All notable changes to docex. The format follows [Keep a Changelog](https://keep
 - A picture moved to another place came back at a default size.
 - In a new, empty document, a click anywhere on the page below the first line now puts the caret there (before, nothing happened and typing went nowhere).
 - In a narrow window, the page margins shrink with the page instead of squeezing the text into a thin column.
+- In a narrow window the toolbar cut off its last buttons. Now the least used groups fold into a More menu (⋯), one group at a time, with their shortcuts and current state.
 
 ## [0.2.0] - 2026-10-30
 

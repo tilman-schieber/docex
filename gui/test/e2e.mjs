@@ -149,6 +149,40 @@ try {
     check(/<u><mark>\w+<\/mark><\/u>|<mark><u>\w+<\/u><\/mark>|<u>\w+<\/u>/.test(md) && md.includes("<mark>"), md);
   });
 
+  await scenario("a narrow window folds toolbar groups into More, nothing cut off", async () => {
+    const size = async (width) => {
+      await page.send("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
+      await page.settle();
+      return page.eval(`(() => {
+        const bar = document.getElementById("toolbar");
+        const last = [...bar.querySelectorAll('[data-panel="sidebar"]')][0].getBoundingClientRect();
+        return { fits: bar.scrollWidth <= bar.clientWidth + 1 && last.right <= innerWidth, more: !document.querySelector(".tb-more").hidden };
+      })()`);
+    };
+    try {
+      const wide = await size(1440);
+      check(wide.fits && !wide.more, `wide: ${JSON.stringify(wide)}`);
+      for (const w of [1100, 900, 700, 520, 400]) {
+        const r = await size(w);
+        check(r.fits && (w > 700 || r.more), `${w}px: ${JSON.stringify(r)}`);
+      }
+      await size(700);
+      await page.click(".ProseMirror p", "split by work package");
+      await page.click("#toolbar .tb-more");
+      await page.waitFor(`!document.getElementById("more-menu").hidden`);
+      const menu = await page.eval(`document.getElementById("more-menu").textContent`);
+      check(menu.includes("Insert a 3×3 table") && menu.includes("Underline"), `menu: ${menu}`);
+      const tables = await page.eval(`document.querySelectorAll(".ProseMirror table").length`);
+      await page.click("#more-menu .mm-row", "Insert a 3×3 table");
+      await page.settle();
+      check((await page.eval(`document.querySelectorAll(".ProseMirror table").length`)) === tables + 1, "the menu inserts a table");
+      check(await page.eval(`document.getElementById("more-menu").hidden`), "the menu closes after a command");
+      await page.key("z", "Control");
+    } finally {
+      await size(1440);
+    }
+  });
+
   // A fresh copy, with a comment by Bob that mentions Tilman.
   file = scratch(dir, "review.docx");
   execFileSync(join(root, "target/debug/docex"), ["comment", file, "--on", "held-out", "@Tilman can you confirm the split?", "--author", "Bob Okafor"]);

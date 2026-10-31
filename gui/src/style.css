@@ -175,6 +175,85 @@ svg.ico {
   background: var(--orange);
 }
 
+/* Too narrow a window: the name and the switch's label go first, then whole
+   groups fold into the More menu (fitToolbar in main.ts). */
+.tb-grp {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.tb-grp.folded,
+#toolbar.tight .brand,
+#toolbar.tight .track-switch .lbl {
+  display: none;
+}
+
+#more-menu {
+  position: fixed;
+  z-index: 25;
+  min-width: 220px;
+  max-height: calc(100vh - 60px);
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  font-size: 12.5px;
+}
+
+#more-menu[hidden] {
+  display: none;
+}
+
+#more-menu .mm-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 5px 8px;
+  text-align: left;
+  color: var(--text);
+}
+
+#more-menu .mm-row:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+#more-menu .mm-row.active {
+  color: var(--accent);
+}
+
+#more-menu .mm-row:disabled {
+  color: var(--faint);
+}
+
+#more-menu .ico {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+#more-menu .mm-lbl {
+  flex: 1;
+}
+
+#more-menu .mm-keys,
+#more-menu .mm-head {
+  color: var(--faint);
+  font-size: 11px;
+}
+
+#more-menu .mm-head {
+  padding: 4px 8px 2px;
+}
+
+#more-menu .mm-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--hair);
+}
+
 .tb-ctx {
   display: none;
   align-items: center;
@@ -2006,24 +2085,12 @@ body.zen-clean .ProseMirror ins .imgv img {
 
 /* Narrow windows: keep the whole toolbar reachable. */
 @media (max-width: 1050px) {
-  #toolbar .brand,
-  .track-switch .lbl {
-    display: none;
-  }
-
   .styles select {
     width: 118px;
   }
 
   #toolbar .sep {
     margin: 0 3px;
-  }
-}
-
-@media (max-width: 760px) {
-  #toolbar .tb[data-tip^="Save as"],
-  #toolbar .tb[data-tip^="Redo"] {
-    display: none;
   }
 }
 
@@ -2464,18 +2531,6 @@ kbd {
   line-height: 1.5;
 }
 
-@media (max-width: 700px) {
-  #toolbar {
-    flex-wrap: wrap;
-    height: auto;
-    padding: 4px 6px;
-  }
-
-  #toolbar .grow {
-    display: none;
-  }
-}
-
 /* ------------------------------------------------------------------------ */
 /* Distraction-free mode: only the page. A bar slides in at the top edge. */
 
@@ -2684,9 +2739,3 @@ body.zen-clean .ProseMirror .hl {
   gap: 6px;
 }
 
-/* With the table buttons out, the switch keeps its knob and drops its label. */
-@media (max-width: 1600px) {
-  #toolbar:has(.tb-ctx.show) .track-switch .lbl {
-    display: none;
-  }
-}
