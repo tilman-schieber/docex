@@ -804,6 +804,20 @@ fn image_target(e: &Element, rels: &Rels) -> Option<String> {
     if is_textbox { None } else { found }
 }
 
+/// Size of a drawing on the page, in EMU.
+pub fn image_extent(node: &Node) -> Option<(u64, u64)> {
+    let mut out = None;
+    if let Node::Element(e) = node {
+        e.visit(&mut |n| {
+            if out.is_none() && n.is("wp:extent") {
+                let dim = |k: &str| n.attr(k).and_then(|v| v.parse::<u64>().ok()).filter(|v| *v > 0);
+                out = dim("cx").zip(dim("cy"));
+            }
+        });
+    }
+    out
+}
+
 /// Alt text of a drawing.
 pub fn image_alt(node: &Node) -> String {
     let mut alt = String::new();

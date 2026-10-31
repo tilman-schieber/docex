@@ -2,7 +2,7 @@
 // real backend, checking the document docex saves.
 //   npm run e2e
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { start, scratch, cat, root } from "./browser.mjs";
 
@@ -374,6 +374,112 @@ try {
     await page.key("F11");
     check(await page.eval(`document.body.classList.contains("zen-clean")`), "F11 comes back to the last view");
     await page.key("F11");
+  });
+
+  // Pictures. rich.docx has one: "A red box", 1.4 × 0.7 cm.
+  const images = (f) => JSON.parse(execFileSync(join(root, "target/debug/docex"), ["images", f, "--json"], { encoding: "utf8" }));
+  const trackOn = async () => {
+    await page.key("p", "Control");
+    await page.type("track changes: turn on");
+    await page.key("Enter");
+    await page.waitFor(`document.querySelector(".track-switch").classList.contains("on")`);
+    await page.settle();
+  };
+  const saveTo = async (f) => {
+    await page.key("s", "Control");
+    await page.waitFor(`!document.querySelector("#status .dirty")`);
+    return images(f);
+  };
+
+  await scenario("picture menu: alt text, resize by the corner, saved untracked", async () => {
+    const f = scratch(dir, "rich.docx");
+    await page.open(f);
+    await page.click(".ProseMirror .imgv img");
+    await page.waitFor(`!document.getElementById("popover").hidden`);
+    const pop = await page.eval(`document.getElementById("popover").textContent`);
+    check(pop.includes("1.4 × 0.7 cm") && pop.includes("A red box"), `menu: ${pop}`);
+    await page.click("#popover button", "Alt text");
+    await page.waitFor(`document.querySelector("#modal:not([hidden]) textarea")`);
+    await page.eval(`document.querySelector("#modal textarea").select()`);
+    await page.type("A small red rectangle");
+    await page.key("Enter", "Control");
+    // Drag the corner 53px → 106px wide.
+    await page.click(".ProseMirror .imgv img");
+    await page.key("Escape");
+    const [x, y] = await page.center(".imgv-grip");
+    await page.mouse("mouseMoved", x, y);
+    await page.mouse("mousePressed", x, y, { buttons: 1 });
+    for (let k = 1; k <= 5; k++) await page.mouse("mouseMoved", x + k * 10.6, y, { buttons: 1 });
+    await page.mouse("mouseReleased", x + 53, y, { buttons: 0 });
+    await page.settle();
+    const [im] = await saveTo(f);
+    check(im.alt === "A small red rectangle", `alt: ${im.alt}`);
+    check(Math.abs(im.width_emu - 1016000) < 20000 && Math.abs(im.height_emu - 508000) < 20000, `size: ${im.width_emu} × ${im.height_emu}`);
+    check(im.status === "plain", "alt text and size aren't tracked changes");
+  });
+
+  await scenario("replace a picture: tracked, same width, its own proportions", async () => {
+    const f = scratch(dir, "rich.docx");
+    await page.open(f);
+    await trackOn();
+    await page.eval(`window.__DOCEX_DEV__.openPath = ${JSON.stringify(join(root, "tests/fixtures/tall.png"))}`);
+    await page.click(".ProseMirror .imgv img");
+    await page.click("#popover button", "Replace");
+    await page.waitFor(`document.querySelectorAll(".ProseMirror .imgv").length === 2`);
+    check(await page.eval(`!!document.querySelector(".ProseMirror del .imgv") && !!document.querySelector(".ProseMirror ins .imgv")`), "old struck through, new inserted");
+    const ims = await saveTo(f);
+    const old = ims.find((i) => i.status === "del");
+    const neu = ims.find((i) => i.status === "ins");
+    check(old && neu, `pictures: ${JSON.stringify(ims)}`);
+    check(neu.width_emu === 508000 && neu.height_emu === 1016000 && neu.alt === "A red box", `new: ${JSON.stringify(neu)}`);
+  });
+
+  await scenario("paste a screenshot, drop a picture, AI writes the alt text", async () => {
+    const f = scratch(dir, "rich.docx");
+    await page.open(f);
+    await trackOn();
+    await page.click(".ProseMirror p", "Second goal");
+    await page.key("End");
+    // A 40×20 PNG on the clipboard, nothing else.
+    await page.eval(`(() => {
+      const b64 = "iVBORw0KGgoAAAANSUhEUgAAACgAAAAUCAIAAABwJOjsAAAAJElEQVR4nGMQqbgzIIhh1OJRi0ctHrV41OJRi0ctHrV45FgMADHwZT1J/KBdAAAAAElFTkSuQmCC";
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const dt = new DataTransfer();
+      dt.items.add(new File([bytes], "shot.png", { type: "image/png" }));
+      document.querySelector(".ProseMirror").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    })()`);
+    await page.waitFor(`document.querySelectorAll(".ProseMirror .imgv").length === 2`);
+    // Dropped on the first paragraph.
+    const [x, y] = await page.center(".ProseMirror p", "First goal");
+    const dpr = await page.eval("window.devicePixelRatio");
+    await page.eval(`window.__DOCEX_DEV__.emit("tauri://drag-drop", { paths: [${JSON.stringify(join(root, "tests/fixtures/tall.png"))}], position: { x: ${x * dpr}, y: ${y * dpr} } })`);
+    await page.waitFor(`document.querySelectorAll(".ProseMirror .imgv").length === 3`);
+    check(await page.eval(`[...document.querySelectorAll(".ProseMirror p")].find((p) => p.textContent.includes("First goal")).querySelector(".imgv") !== null`), "the dropped picture lands where it was dropped");
+    writeFileSync(join(dir, "ai.txt"), "A blue bar");
+    await page.key("p", "Control");
+    await page.type("alt text for pictures");
+    await page.key("Enter");
+    await page.waitFor(`document.querySelector("#modal:not([hidden]) .alt-list")`);
+    check((await page.eval(`document.querySelectorAll("#modal .alt-row").length`)) === 2, "two pictures without alt text");
+    const req = JSON.parse(readFileSync(join(dir, "ai.txt.req"), "utf8"));
+    check(req.images.length === 1 && req.images[0].startsWith("data:image/png;base64,"), "the picture goes to the AI");
+    check(req.prompt.includes("Second goal") || req.prompt.includes("First goal"), `context: ${req.prompt}`);
+    await page.click("#modal button", "Use these");
+    const ims = await saveTo(f);
+    check(ims.length === 3 && ims.every((i) => i.alt), `alt texts: ${JSON.stringify(ims.map((i) => i.alt))}`);
+    check(ims.filter((i) => i.status === "ins").length === 2, "pasted and dropped pictures are tracked insertions");
+  });
+
+  await scenario("a picture the editor can't show gets a named box", async () => {
+    await page.eval(`(() => { const i = document.querySelector(".ProseMirror .imgv img"); i.src = "data:image/x-emf;base64,AAAA"; })()`);
+    await page.waitFor(`document.querySelector(".ProseMirror .imgv img").src.startsWith("data:image/svg+xml")`);
+    check(decodeURIComponent(await page.eval(`document.querySelector(".ProseMirror .imgv img").src`)).includes("No preview"), "placeholder names the picture");
+  });
+
+  await scenario("dropping a Word document opens it", async () => {
+    const other = scratch(dir, "review.docx");
+    await page.eval(`window.__DOCEX_DEV__.emit("tauri://drag-drop", { paths: [${JSON.stringify(other)}], position: { x: 300, y: 300 } })`);
+    await page.waitFor(`document.querySelector("#status .path").textContent.endsWith("review.docx")`);
   });
 } finally {
   await close();

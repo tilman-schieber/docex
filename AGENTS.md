@@ -37,6 +37,7 @@ Rules:
 - **To suggest an edit explicitly**, write `{~~old~>new~~}`, `{++added++}` or `{--removed--}`. These are always tracked.
 - **Structure:** `#` makes a heading, `- ` a bullet, `1. ` a numbered item, `> ` a quote, `: ` a caption.
 - **Underline, highlight, colour, raised text:** `<u>`, `<mark>` (`data-color="green"` for other highlighter colours), `<span style="color:#C00000">`, `<sup>`, `<sub>`. Keep them as rendered; add or remove them like `**bold**`.
+- **Pictures** are `![alt text](media/image1.png)`. Change the alt text in place, or add `{width=8cm}` (cm, mm, in, pt, px, or `%` of the text width) to resize; both apply directly, as Word doesn't track them. To replace a picture, put a PNG, JPEG or GIF path in its place (relative to the Markdown file): it becomes a tracked replacement at the old width and position, with the old alt text unless you change it. `docex images FILE` lists every picture with its size, alt text and section; `--extract DIR` saves them.
 - **Formulas:** `$…$` inline, `$$…$$` on its own line. They become Word equations.
 - **Footnotes:** edit the `[^n]: text` definitions at the end. To add one, put `[^new]` in the text and `[^new]: text` at the end.
 - **Tables:** edit cells in place; add or remove rows and columns. Pipe tables: inside a cell, write `|` as `\|`. Tables with merged cells are HTML (`<table>`, one `<td>` per line, `colspan`/`rowspan`); a cell covered by a `rowspan` from above is not listed in its row. Cell text is docex Markdown, `<br>` separates paragraphs. To merge, widen one cell's span and remove the cells it now covers. Keep the table free of blank lines. Blocks marked `docex-table` are read-only.
@@ -53,3 +54,4 @@ Rules:
 - `docex cat FILE --json`: blocks with id, type, style and text.
 - `docex changes FILE --json`: raw tracked changes with their Word ids (`wids`) and part.
 - `docex comments FILE --json`: id, author, date, text, anchor, parent, done.
+- `docex images FILE --json`: n, target, alt, width/height in EMU (360,000 per cm), pixels, bytes, section, status.

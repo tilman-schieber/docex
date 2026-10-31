@@ -64,6 +64,14 @@ fn mime(name: &str) -> &'static str {
         "image/svg+xml"
     } else if n.ends_with(".bmp") {
         "image/bmp"
+    } else if n.ends_with(".webp") {
+        "image/webp"
+    } else if n.ends_with(".tif") || n.ends_with(".tiff") {
+        "image/tiff"
+    } else if n.ends_with(".emf") || n.ends_with(".emz") {
+        "image/x-emf"
+    } else if n.ends_with(".wmf") || n.ends_with(".wmz") {
+        "image/x-wmf"
     } else {
         "image/png"
     }
@@ -357,6 +365,49 @@ pub fn theme() -> Theme {
 pub fn image_data(path: String) -> Result<String, String> {
     let bytes = std::fs::read(&path).map_err(err)?;
     Ok(data_url(&path, &bytes))
+}
+
+/// The bytes of a picture: a media file of the open document (`media/image1.png`)
+/// or, for one inserted since the last sync, the file it came from.
+fn picture_bytes(state: &AppState, src: &str) -> Result<Vec<u8>, String> {
+    let guard = state.session.lock().unwrap();
+    if let Some(s) = guard.as_ref() {
+        if let Ok(b) = s.doc.media(src) {
+            return Ok(b);
+        }
+    }
+    std::fs::read(src).map_err(err)
+}
+
+/// Save one picture to `dest`.
+pub fn save_image(state: &AppState, src: String, dest: String) -> Result<(), String> {
+    std::fs::write(&dest, picture_bytes(state, &src)?).map_err(err)
+}
+
+/// Save every picture of the document to `dir`, numbered in reading order.
+pub fn save_images(state: &AppState, dir: String) -> Result<usize, String> {
+    let guard = state.session.lock().unwrap();
+    let s = guard.as_ref().ok_or("no document open")?;
+    let images = s.doc.images();
+    for im in &images {
+        let name = im.target.rsplit('/').next().unwrap_or(&im.target);
+        let dest = Path::new(&dir).join(format!("{:02}-{name}", im.n));
+        std::fs::write(&dest, s.doc.media(&im.target).map_err(err)?).map_err(|e| format!("{}: {e}", dest.display()))?;
+    }
+    Ok(images.len())
+}
+
+/// Keep a pasted picture (base64) in a file, so it can be inserted like any
+/// other; returns its path.
+pub fn keep_pasted(data: String, ext: String) -> Result<String, String> {
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data.as_bytes()).map_err(err)?;
+    let dir = snapshot::data_dir().unwrap_or_else(std::env::temp_dir).join("pasted");
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let ext = if matches!(ext.as_str(), "png" | "jpeg" | "jpg" | "gif") { ext } else { "png".into() };
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let path = dir.join(format!("pasted-{stamp}.{ext}"));
+    std::fs::write(&path, bytes).map_err(err)?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 /// The previous snapshot for `path` (or for a similar earlier file), then

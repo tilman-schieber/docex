@@ -2,7 +2,7 @@
 //! into surgical XML changes, as tracked revisions by default.
 
 use crate::comments::text_el;
-use crate::mdparse::{atoms_key, EAtom, EBlock, ECell, EComment, EPara, ETable};
+use crate::mdparse::{atoms_key, EAtom, EBlock, ECell, EComment, EPara, ETable, WIDTH_PCT};
 use crate::model::{marks_of, Block, Marks, Para, Status, Table, VMerge, What, WrapKind, HIGHLIGHTS};
 use crate::package::Rels;
 use crate::styles::{Kind, Styles};
@@ -156,9 +156,12 @@ pub struct Stats {
     pub paragraphs_added: usize,
     pub paragraphs_removed: usize,
     pub kind_changes: usize,
+    /// Pictures whose alt text or size changed (never tracked).
+    pub pictures: usize,
 }
 
 impl PatchCtx<'_> {
+
     fn id(&mut self) -> String {
         self.next_id += 1;
         self.next_id.to_string()
@@ -343,6 +346,20 @@ enum Content {
     Char(char),
     Node(Node),
     NewObj(String),
+    /// A picture: a file to add (or one already in the package), drawn in the
+    /// frame of `like` (the picture it replaces) if there is one.
+    NewImg { path: String, like: Option<Node>, alt: Option<String>, width: Option<u64> },
+}
+
+/// What a new atom writes.
+fn atom_content(a: &EAtom, like: Option<Node>) -> Content {
+    if a.key.chars().count() == 1 && a.key != "\t" && a.key != "\n" {
+        Content::Char(a.key.chars().next().unwrap())
+    } else if let Some(path) = a.key.strip_prefix("img:") {
+        Content::NewImg { path: path.to_string(), like, alt: a.alt.clone(), width: a.width }
+    } else {
+        Content::NewObj(a.key.clone())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -459,6 +476,8 @@ struct Planner<'p> {
     group: u32,
     last_op: u8,
     changed: bool,
+    /// The picture just deleted: one inserted right after it replaces it.
+    del_img: Option<Node>,
 }
 
 impl<'p> Planner<'p> {
@@ -504,7 +523,7 @@ fn plan(p: &Para, orig: &[EAtom], new: Option<&[EAtom]>, comments: &[EComment], 
     let cm = CommentMarks::new(comments, new.map_or(0, |n| n.len()), cx);
     let tracked = cx.opts.tracked;
     let me = cx.opts.author.clone();
-    let mut pl = Planner { p, outs: Vec::new(), next: 0, last_vis: None, group: 0, last_op: 0, changed: false };
+    let mut pl = Planner { p, outs: Vec::new(), next: 0, last_vis: None, group: 0, last_op: 0, changed: false, del_img: None };
     let ops = match new {
         Some(new) => atom_ops(orig, new),
         None => (0..orig.len()).map(AOp::Del).collect(),
@@ -549,12 +568,24 @@ fn plan_op(pl: &mut Planner, op: AOp, map: &[Option<usize>], orig: &[EAtom], new
                 }
                 pl.keep(ii, changed.then_some(nm));
                 pl.next = ii + 1;
+                pl.del_img = None;
+                if let Some(Content::Node(n)) = pl.outs.last_mut().map(|o| &mut o.content) {
+                    if set_image_props(n, new[e].alt.as_deref(), new[e].width, cx.max_image_emu) {
+                        pl.changed = true;
+                        cx.stats.pictures += 1;
+                    }
+                }
             }
             AOp::Del(r) => {
                 let Some(ii) = map[r] else { return };
                 pl.flush(ii);
                 pl.next = ii + 1;
                 let it = &p.items[ii];
+                if let What::Obj { key, node } = &it.what {
+                    if key.starts_with("img:") {
+                        pl.del_img = Some(node.clone());
+                    }
+                }
                 let st = p.status(it);
                 match st {
                     Status::Del => pl.keep(ii, None),
@@ -614,11 +645,8 @@ fn plan_op(pl: &mut Planner, op: AOp, map: &[Option<usize>], orig: &[EAtom], new
                     ctx.push(CtxEl::NewIns(g));
                 }
                 let tmpl_run = tmpl.and_then(|t| p.items[t].run);
-                let content = if a.key.chars().count() == 1 && a.key != "\t" && a.key != "\n" {
-                    Content::Char(a.key.chars().next().unwrap())
-                } else {
-                    Content::NewObj(a.key.clone())
-                };
+                let like = if a.key.starts_with("img:") { pl.del_img.take() } else { None };
+                let content = atom_content(a, like);
                 pl.outs.push(Out {
                     ctx,
                     run: Some(RunKey::New { tmpl: tmpl_run, marks: a.marks, link: a.link.is_some() }),
@@ -718,7 +746,7 @@ pub fn comment_on_items(p: &Para, si: usize, ei: usize, text: &str, cx: &mut Pat
     let id = cx.next_comment_id;
     cx.next_comment_id += 1;
     cx.new_comments.push((id, text.to_string()));
-    let mut pl = Planner { p, outs: Vec::new(), next: 0, last_vis: None, group: 0, last_op: 0, changed: true };
+    let mut pl = Planner { p, outs: Vec::new(), next: 0, last_vis: None, group: 0, last_op: 0, changed: true, del_img: None };
     for i in 0..p.items.len() {
         if i == si {
             let ctx = p.items[i].ctx.iter().map(|w| CtxEl::Orig(*w)).filter(|c| !matches!(c, CtxEl::Orig(w) if p.wraps[*w].kind == WrapKind::Del)).collect();
@@ -875,7 +903,7 @@ fn new_obj(key: &str, cx: &mut PatchCtx) -> Option<Node> {
         "\t" => Some(Element::new("w:tab").into()),
         "\n" => Some(Element::new("w:br").into()),
         "<!--docex:pagebreak-->" => Some(Element::new("w:br").with_attr("w:type", "page").into()),
-        k if k.starts_with("img:") => match new_image(&k[4..], cx) {
+        k if k.starts_with("img:") => match new_image(&k[4..], None, None, None, cx) {
             Ok(n) => Some(n),
             Err(e) => {
                 cx.warnings.push(format!("image {} skipped: {e}", &k[4..]));
@@ -900,7 +928,7 @@ fn new_obj(key: &str, cx: &mut PatchCtx) -> Option<Node> {
 const REL_IMAGE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
 
 /// Pixel size of a PNG, JPEG or GIF.
-fn image_size(b: &[u8]) -> Option<(u64, u64)> {
+pub fn image_size(b: &[u8]) -> Option<(u64, u64)> {
     if b.starts_with(b"\x89PNG") && b.len() >= 24 {
         let w = u32::from_be_bytes(b[16..20].try_into().ok()?) as u64;
         let h = u32::from_be_bytes(b[20..24].try_into().ok()?) as u64;
@@ -929,8 +957,73 @@ fn image_size(b: &[u8]) -> Option<(u64, u64)> {
     None
 }
 
-/// An inline `w:drawing` for a new picture (or one already in the package).
-fn new_image(path: &str, cx: &mut PatchCtx) -> anyhow::Result<Node> {
+/// Width in EMU of a `{width=…}` value (which may be a share of the text width).
+fn resolve_width(w: u64, text_width: u64) -> u64 {
+    if w >= WIDTH_PCT {
+        text_width * (w - WIDTH_PCT) / 1000
+    } else {
+        w
+    }
+}
+
+/// Set a drawing's alt text and width (keeping its proportions). Whether anything changed.
+fn set_image_props(n: &mut Node, alt: Option<&str>, width: Option<u64>, text_width: u64) -> bool {
+    let Node::Element(d) = n else { return false };
+    let mut changed = false;
+    // Markdown can't keep line breaks in alt text: compare the words.
+    let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if let Some(alt) = alt {
+        if words(&crate::model::image_alt(&Node::Element(d.clone()))) != words(alt) {
+            d.visit_mut(&mut |e| {
+                if e.is("wp:docPr") {
+                    e.set_attr("descr", alt);
+                }
+            });
+            changed = true;
+        }
+    }
+    if let (Some(w), Some((ow, oh))) = (width, crate::model::image_extent(&Node::Element(d.clone()))) {
+        let w = resolve_width(w, text_width);
+        // Rounding in the editor: a few EMU (well under a pixel) is no change.
+        if w > 0 && w.abs_diff(ow) > 9525 / 2 {
+            set_extent(d, w, oh * w / ow);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn set_extent(d: &mut Element, w: u64, h: u64) {
+    d.visit_mut(&mut |e| {
+        if e.is("wp:extent") || (e.is("a:ext") && e.attr("cx").is_some()) {
+            e.set_attr("cx", w.to_string());
+            e.set_attr("cy", h.to_string());
+        }
+    });
+}
+
+/// The drawing of a picture already in the document, by its media target.
+fn drawing_of(blocks: &[Block], target: &str) -> Option<Node> {
+    let key = format!("img:{target}");
+    let in_paras = |ps: &[Para]| {
+        ps.iter().flat_map(|p| p.items.iter()).find_map(|it| match &it.what {
+            What::Obj { key: k, node } if *k == key => Some(node.clone()),
+            _ => None,
+        })
+    };
+    blocks.iter().find_map(|b| match b {
+        Block::Para(p) => in_paras(std::slice::from_ref(p)),
+        Block::Control(c) => in_paras(&c.paras),
+        Block::Table(t) => t.rows.iter().flat_map(|r| &r.cells).find_map(|c| in_paras(&c.paras)),
+        Block::Opaque { .. } => None,
+    })
+}
+
+/// A `w:drawing` for a picture: a new file (or one already in the package).
+/// With `like` (the picture it replaces), or for a picture already in the
+/// document, it keeps that frame: width, wrapping and position, alt text; the
+/// height follows the new picture's proportions.
+fn new_image(path: &str, like: Option<&Node>, alt: Option<&str>, width: Option<u64>, cx: &mut PatchCtx) -> anyhow::Result<Node> {
     let existing = cx.rels.iter().find(|r| r.kind.ends_with("/image") && r.target == path).map(|r| r.id.to_string());
     let (rid, size) = match existing {
         Some(id) => (id, None),
@@ -954,19 +1047,57 @@ fn new_image(path: &str, cx: &mut PatchCtx) -> anyhow::Result<Node> {
             (id, Some(size))
         }
     };
-    let (w, h) = size.unwrap_or((400, 300));
-    // 96 dpi, scaled down to the text width.
-    let (mut cx_emu, mut cy_emu) = (w * 9525, h * 9525);
     let max = if cx.max_image_emu > 0 { cx.max_image_emu } else { 5_486_400 };
-    if cx_emu > max {
-        cy_emu = cy_emu * max / cx_emu;
-        cx_emu = max;
-    }
+    let width = width.map(|w| resolve_width(w, max));
     let pid = 10_000 + cx.next_id;
     cx.next_id += 1;
     let name = path.rsplit('/').next().unwrap_or(path);
+
+    let found = match (like, size) {
+        (None, None) => drawing_of(cx.blocks, path),
+        _ => None,
+    };
+    if let Some(Node::Element(tmpl)) = like.or(found.as_ref()) {
+        let mut d = tmpl.clone();
+        d.visit_mut(&mut |e| {
+            if e.is("a:blip") {
+                e.set_attr("r:embed", rid.clone());
+                // An SVG version of the old picture would still show in Word.
+                e.children.retain(|c| !matches!(c, Node::Element(x) if x.is("a:extLst")));
+            } else if e.is("v:imagedata") {
+                e.set_attr("r:id", rid.clone());
+            } else if e.is("wp:docPr") {
+                e.set_attr("id", pid.to_string());
+                e.set_attr("name", format!("Picture {pid}"));
+            } else if e.is("pic:cNvPr") {
+                e.set_attr("name", name);
+            }
+        });
+        let node = Node::Element(d.clone());
+        if let Some((ow, oh)) = crate::model::image_extent(&node) {
+            let w = width.unwrap_or(ow);
+            let h = match size {
+                Some((pw, ph)) if pw > 0 => w * ph / pw,
+                _ => oh * w / ow,
+            };
+            set_extent(&mut d, w, h);
+        }
+        let mut node = Node::Element(d);
+        set_image_props(&mut node, alt, None, max);
+        return Ok(node);
+    }
+
+    let (w, h) = size.unwrap_or((400, 300));
+    // 96 dpi, scaled down to the text width.
+    let (mut cx_emu, mut cy_emu) = (w * 9525, h * 9525);
+    let target = width.unwrap_or(cx_emu.min(max));
+    if target != cx_emu {
+        cy_emu = cy_emu * target / cx_emu;
+        cx_emu = target;
+    }
     let xml = format!(
-        r#"<w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{cx_emu}" cy="{cy_emu}"/><wp:docPr id="{pid}" name="Picture {pid}" descr=""/><wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="0" name="{}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="{rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx_emu}" cy="{cy_emu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing>"#,
+        r#"<w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{cx_emu}" cy="{cy_emu}"/><wp:docPr id="{pid}" name="Picture {pid}" descr="{}"/><wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="0" name="{}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="{rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx_emu}" cy="{cy_emu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing>"#,
+        crate::xml::escape_attr(alt.unwrap_or("")),
         crate::xml::escape_attr(name)
     );
     Ok(crate::xml::Document::parse(&xml)?.root.into())
@@ -1235,6 +1366,13 @@ impl Builder<'_, '_> {
                         self.flush_text();
                         if let Some(n) = new_obj(&k, self.cx) {
                             self.run.as_mut().unwrap().1.children.push(n);
+                        }
+                    }
+                    Content::NewImg { path, like, alt, width } => {
+                        self.flush_text();
+                        match new_image(&path, like.as_ref(), alt.as_deref(), width, self.cx) {
+                            Ok(n) => self.run.as_mut().unwrap().1.children.push(n),
+                            Err(e) => self.cx.warnings.push(format!("image {path} skipped: {e}")),
                         }
                     }
                 }
@@ -1524,11 +1662,7 @@ pub fn new_para(e: &EPara, near: Option<usize>, cx: &mut PatchCtx) -> Node {
             if tracked || a.st == Status::Ins {
                 ctx.push(CtxEl::NewIns(1));
             }
-            let content = if a.key.chars().count() == 1 && a.key != "\t" && a.key != "\n" {
-                Content::Char(a.key.chars().next().unwrap())
-            } else {
-                Content::NewObj(a.key.clone())
-            };
+            let content = atom_content(a, None);
             cx.stats.insertions += 1;
             outs.push(Out { ctx, run: Some(RunKey::New { tmpl: None, marks: a.marks, link: a.link.is_some() }), content });
         }
@@ -1723,11 +1857,7 @@ pub fn new_cell_para(e: &EPara, ppr: Option<Element>, rpr: Option<Element>, cx: 
             outs.push(Out {
                 ctx,
                 run: Some(RunKey::New { tmpl: None, marks: a.marks, link: a.link.is_some() }),
-                content: if a.key.chars().count() == 1 && a.key != "\t" && a.key != "\n" {
-                    Content::Char(a.key.chars().next().unwrap())
-                } else {
-                    Content::NewObj(a.key.clone())
-                },
+                content: atom_content(a, None),
             });
         }
         cm.after(k, &mut outs, None);

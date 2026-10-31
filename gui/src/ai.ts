@@ -36,7 +36,7 @@ interface SettingsView {
 let counter = 0;
 
 /** Run a request; `onText` receives the text so far as it streams in. */
-export async function runAI(system: string, prompt: string, onText?: (soFar: string) => void, maxTokens?: number): Promise<string> {
+export async function runAI(system: string, prompt: string, onText?: (soFar: string) => void, maxTokens?: number, images?: string[]): Promise<string> {
   const id = `ai${Date.now()}-${counter++}`;
   let soFar = "";
   const un = await listen<{ id: string; text: string }>("ai-delta", (e) => {
@@ -45,7 +45,7 @@ export async function runAI(system: string, prompt: string, onText?: (soFar: str
     onText?.(soFar);
   });
   try {
-    return await invoke<string>("ai_complete", { req: { id, system, prompt, max_tokens: maxTokens } });
+    return await invoke<string>("ai_complete", { req: { id, system, prompt, max_tokens: maxTokens, images: images ?? [] } });
   } finally {
     un();
   }

@@ -11,6 +11,10 @@ pub struct EAtom {
     pub marks: Marks,
     pub link: Option<String>,
     pub st: Status,
+    /// For a picture: its alt text, and its width in EMU if one was asked for
+    /// (`{width=8cm}`); `None` keeps what the document has.
+    pub alt: Option<String>,
+    pub width: Option<u64>,
 }
 
 /// A comment written into the Markdown: `{==anchor==}{>>text<<}` or `{>>text<<}`.
@@ -135,6 +139,14 @@ pub fn atoms_key(atoms: &[EAtom]) -> String {
         }
         if let Some(l) = &a.link {
             s.push_str(l);
+        }
+        // A picture's alt text and asked-for width.
+        if let Some(alt) = &a.alt {
+            s.push('\u{2}');
+            s.extend(alt.split_whitespace().flat_map(|w| [w, " "]));
+        }
+        if let Some(w) = a.width {
+            s.push_str(&format!("\u{3}{w}"));
         }
     }
     s
@@ -352,6 +364,8 @@ struct Inline {
     in_comment: Option<String>,
     hl_start: Vec<usize>,
     image: Option<(String, String)>,
+    /// Just after a picture: `{width=8cm}` may follow.
+    after_image: bool,
 }
 
 struct P {
@@ -473,6 +487,15 @@ impl P {
     }
 
     fn push_text(&mut self, s: &str, code: bool) {
+        let mut s = s;
+        if std::mem::take(&mut self.inl.after_image) && !code {
+            if let Some((w, rest)) = image_attrs(s) {
+                if let Some(a) = self.target().and_then(|p| p.atoms.last_mut()) {
+                    a.width = Some(w);
+                }
+                s = rest;
+            }
+        }
         for c in s.chars() {
             if is_sentinel(c) {
                 self.sentinel(c);
@@ -495,6 +518,8 @@ impl P {
                 marks: self.marks(code),
                 link: self.inl.link.last().cloned(),
                 st,
+                alt: None,
+                width: None,
             };
             if let Some(p) = self.target() {
                 p.atoms.push(atom);
@@ -503,10 +528,14 @@ impl P {
     }
 
     fn push_obj(&mut self, key: String) {
+        self.push_atom(key, None);
+    }
+
+    fn push_atom(&mut self, key: String, alt: Option<String>) {
         if self.inl.in_comment.is_some() {
             return;
         }
-        let atom = EAtom { key, marks: self.marks(false), link: self.inl.link.last().cloned(), st: self.status() };
+        let atom = EAtom { key, marks: self.marks(false), link: self.inl.link.last().cloned(), st: self.status(), alt, width: None };
         if let Some(p) = self.target() {
             p.atoms.push(atom);
         }
@@ -550,6 +579,30 @@ impl P {
             _ => {}
         }
     }
+}
+
+/// EMU per unit of a `{width=…}` length; `%` is of the text width, resolved later
+/// (stored as `PCT + per mille`).
+pub const WIDTH_PCT: u64 = 1 << 40;
+
+/// `{width=8cm}` (cm, mm, in, pt, px or % of the text width) at the start of
+/// `s`: the width in EMU and the rest of the text.
+fn image_attrs(s: &str) -> Option<(u64, &str)> {
+    let body = s.strip_prefix("{width=")?;
+    let end = body.find('}')?;
+    let v = body[..end].trim();
+    let num_end = v.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(v.len());
+    let n: f64 = v[..num_end].parse().ok()?;
+    let per = match v[num_end..].trim() {
+        "cm" => 360_000.0,
+        "mm" => 36_000.0,
+        "in" => 914_400.0,
+        "pt" => 12_700.0,
+        "px" | "" => 9_525.0,
+        "%" => return (n > 0.0).then(|| (WIDTH_PCT + (n * 10.0).round() as u64, &body[end + 1..])),
+        _ => return None,
+    };
+    (n > 0.0).then(|| ((n * per).round() as u64, &body[end + 1..]))
 }
 
 fn trim(p: &mut EPara) {
@@ -933,8 +986,9 @@ pub fn parse_full(src: &str) -> Parsed {
                     p.inl.link.pop();
                 }
                 TagEnd::Image => {
-                    if let Some((url, _alt)) = p.inl.image.take() {
-                        p.push_obj(format!("img:{url}"));
+                    if let Some((url, alt)) = p.inl.image.take() {
+                        p.push_atom(format!("img:{url}"), Some(alt));
+                        p.inl.after_image = true;
                     }
                 }
                 _ => {}

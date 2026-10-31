@@ -91,7 +91,8 @@ export const schema = new Schema({
       group: "inline",
       atom: true,
       draggable: true,
-      attrs: { src: {}, alt: { default: "" } },
+      // w, h: the size on the page in EMU (null: the picture's own size).
+      attrs: { src: {}, alt: { default: "" }, w: { default: null }, h: { default: null } },
       parseDOM: [],
       toDOM(n) {
         return ["img", { src: imageUrls.get(n.attrs.src) || "", alt: n.attrs.alt, title: n.attrs.alt || n.attrs.src, "data-src": n.attrs.src }];

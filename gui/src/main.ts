@@ -71,6 +71,7 @@ import { imageUrls, KINDS, renderMath, schema } from "./schema";
 import { trackTransaction } from "./track";
 import { setGraphics } from "./chart";
 import { createFindBar, findPlugin } from "./find";
+import { describeAll, hideImageMenu, imageNodeView, listenForDrops, pastePicture, pickPictures, picturesWithoutAlt, saveAllPictures, showImageMenu, type ImageHost } from "./images";
 import { checkUpdate, dismissed, dismissUpdate, openRelease, setUpdateChecks, updateChecksOn, type Update } from "./update";
 import * as reviewLog from "./review-log";
 import type { Change, Comment, HeaderFooter, View } from "./types";
@@ -363,20 +364,25 @@ const view = new EditorView($("#editor"), {
     }
     updateToolbar();
   },
-  handleClickOn(_v, _pos, node, nodePos) {
+  nodeViews: { image: imageNodeView },
+  handleClickOn(_v, _pos, node, nodePos, _e, direct) {
     if (node.type === schema.nodes.math) {
       void insertMath(nodePos);
       return true;
     }
+    // The picture gets selected as usual; its menu opens below it.
+    if (node.type === schema.nodes.image && direct && zen !== "clean") setTimeout(() => showImageMenu(imageHost, nodePos));
     return false;
   },
   handlePaste(v, e) {
-    return pasteMarkdown(v, e, () => ({ on: tracking, author }));
+    return pastePicture(imageHost, e) || pasteMarkdown(v, e, () => ({ on: tracking, author }));
   },
   handleDOMEvents: {
     click(_v, e) {
       // As if accepted, there are no changes or comments to click on.
       if (zen === "clean") return false;
+      // A picture has its own menu (with accept / reject when it's a change).
+      if ((e.target as HTMLElement).closest(".imgv")) return false;
       const el = (e.target as HTMLElement).closest("ins.chg, del.chg, .fmtchg") as HTMLElement | null;
       if (el && el.dataset.wid) {
         showChangePopover(el);
@@ -388,6 +394,35 @@ const view = new EditorView($("#editor"), {
     },
   },
 });
+
+const imageHost: ImageHost = {
+  view,
+  toast,
+  progress: progressToast,
+  askText,
+  changeRow(node) {
+    const m = node.marks.find((m) => (m.type === schema.marks.ins || m.type === schema.marks.del) && m.attrs.wid);
+    if (!m) return null;
+    const wid = m.attrs.wid as string;
+    const decide = (yes: boolean) => () => {
+      hideImageMenu();
+      void decideWid(wid, yes);
+    };
+    const it = cockpit.itemByWid(wid);
+    const what = m.type === schema.marks.ins ? "Inserted" : "Deleted";
+    return h(
+      "div",
+      { class: "row" },
+      h("span", { class: "pop-who" }, `${what} by ${m.attrs.author}${it ? ` · ${shortDate(it.date)}` : ""}`),
+      h("button", { class: "ok", textContent: "Accept", onclick: decide(true) }),
+      h("button", { class: "no", textContent: "Reject", onclick: decide(false) }),
+    );
+  },
+  lang: () => current?.lang ?? null,
+  openFile: async (path) => {
+    if (await confirmDiscard()) await openFile(path);
+  },
+};
 
 // "Since you last saw it": the snapshot from the previous visit, for this session.
 let sinceBase: Snapshot | null = null;
@@ -782,18 +817,8 @@ async function toggleTrack() {
   toast(`Track changes ${tracking ? "on" : "off"}`);
 }
 
-async function insertImage() {
-  const p = await openDialog({ multiple: false, filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif"] }] });
-  if (!p) return;
-  const path = p as string;
-  try {
-    imageUrls.set(path, await invoke<string>("image_data", { path }));
-  } catch (e) {
-    toast(String(e), "error");
-    return;
-  }
-  view.dispatch(view.state.tr.replaceSelectionWith(schema.nodes.image.create({ src: path, alt: "" })).scrollIntoView());
-  view.focus();
+function insertImage() {
+  return pickPictures(imageHost);
 }
 
 function insertTable() {
@@ -835,15 +860,20 @@ function hidePopover() {
   $("#popover").hidden = true;
 }
 
+/** Accept or reject the change with Word id `wid`: the whole review item, like the list does. */
+function decideWid(wid: string, yes: boolean) {
+  const it = cockpit.itemByWid(wid);
+  const ch = current?.changes.find((c) => c.wids.includes(wid));
+  return it ? cockpit.resolve([it], yes) : accept(ch ? ch.wids : [wid], yes);
+}
+
 function showChangePopover(el: HTMLElement) {
   const pop = $("#popover");
   const wid = el.dataset.wid!;
-  // The review item covers both halves of a replacement, like the list does.
   const it = cockpit.itemByWid(wid);
-  const ch = current?.changes.find((c) => c.wids.includes(wid));
   const decide = (yes: boolean) => {
     hidePopover();
-    void (it ? cockpit.resolve([it], yes) : accept(ch ? ch.wids : [wid], yes));
+    void decideWid(wid, yes);
   };
   const btn = (label: string, cls: string, yes: boolean) => {
     const b = h("button", { class: cls, textContent: label, onclick: () => decide(yes) });
@@ -997,7 +1027,7 @@ $("#toolbar").append(
   sep(),
   ...markButtons.map(([b]) => b),
   sep(),
-  tb(Image, "Insert an image from a file", insertImage),
+  tb(Image, "Insert pictures  or paste or drop them on the page", insertImage),
   tb(Table, "Insert a 3×3 table", insertTable),
   tb(Asterisk, "Insert a footnote at the cursor", insertFootnote),
   tb(Sigma, "Insert a formula  or type $…$ / $$…$$", () => insertMath()),
@@ -1190,6 +1220,7 @@ function aiEntries(): Entry[] {
     { label: "Triage with AI suggestions (the changes shown)", group: "AI", keywords: "review accept reject advice", run: () => cockpit.startTriage(true) },
     { label: "Summarize the changes and comments shown", group: "AI", run: () => summarizeReview(aiHost, cockpit.shown(), "the review list") },
     { label: "Summarize all changes and comments", group: "AI", run: () => summarizeReview(aiHost, cockpit.index().items, "all changes and comments") },
+    { label: `Write alt text for pictures without one (${picturesWithoutAlt(view.state.doc).length})`, group: "AI", keywords: "image accessibility describe", run: () => describeAll(imageHost) },
     { label: "AI settings (provider, key, model)…", group: "AI", run: () => aiSettingsDialog() },
   ];
 }
@@ -1271,7 +1302,8 @@ function paletteEntries(): Entry[] {
     { label: "Find and replace…", group: "Command", hint: "Ctrl+H", run: () => findBar.open(true) },
     { label: "Insert table", group: "Insert", run: insertTable },
     ...TABLE_CMDS.map(([, tip, cmd]) => ({ label: `Table: ${tip.replace(/\s+\(.*\)$/, "").toLowerCase()}`, group: "Table", run: () => { cmd(view.state, view.dispatch); view.focus(); } })),
-    { label: "Insert image…", group: "Insert", run: insertImage },
+    { label: "Insert pictures…", group: "Insert", keywords: "image photo screenshot", run: insertImage },
+    { label: "Save all pictures to a folder…", group: "Command", keywords: "images extract export", run: () => saveAllPictures(imageHost) },
     { label: "Insert footnote", group: "Insert", run: insertFootnote },
     { label: "Insert formula", group: "Insert", run: () => insertMath() },
     { label: "Comment on selection", group: "Insert", run: addComment },
@@ -1351,7 +1383,7 @@ document.addEventListener("keydown", (e) => {
   }
 });
 document.addEventListener("mousedown", (e) => {
-  if (!(e.target as HTMLElement).closest("#popover, ins.chg, del.chg, .fmtchg")) hidePopover();
+  if (!(e.target as HTMLElement).closest("#popover, ins.chg, del.chg, .fmtchg, .imgv")) hidePopover();
 });
 
 void getCurrentWindow().onCloseRequested(async (e) => {
@@ -1371,4 +1403,5 @@ void getCurrentWindow().onCloseRequested(async (e) => {
   else await call("new_doc", {}, false);
   view.focus();
   void showUpdate();
+  void listenForDrops(imageHost).catch(() => {});
 })();

@@ -49,6 +49,7 @@ docex comment report.docx --on "quoted text" "Please check this"
 docex diff a.docx b.docx              # what changed between two versions
 docex diff mine.docx theirs.docx --into --track   # a version sent back without tracked changes,
                                                   # as tracked changes by whoever saved it
+docex images report.docx --extract figs/   # the pictures: size, alt text, section; saved as files
 docex new notes.md -o notes.docx      # a new document from Markdown
 ```
 
@@ -57,6 +58,8 @@ Edits follow the document's own Track Changes switch, as in Word: with it on, th
 ## How a document looks in Markdown
 
 Headings, lists, emphasis, links, footnotes, images, captions and equations map to the Markdown you'd expect. Tracked changes and comments use [CriticMarkup](https://github.com/CriticMarkup/CriticMarkup-toolkit) (`{++added++}`, `{--removed--}`, `{==text==}{>>comment<<}`), so you can also write suggestions and comments by hand. Where Markdown runs out, docex uses a bit of HTML: tables with merged cells, underline, highlighting and colour.
+
+Pictures are `![alt text](media/image1.png)`. Edit the alt text in place; add `{width=8cm}` (or `50%` of the text width) to resize. Put another file's path in the brackets to replace a picture: the new one takes over the old one's width, wrapping and alt text, as a tracked replacement. Word doesn't track alt text or size, so those change directly.
 
 Things docex can't or shouldn't edit (a table of contents, shapes, charts, headers and footers) appear as clearly marked placeholders. Charts come with their data, so figures quoted in the text can be checked against them. Leave a placeholder alone and the content survives; delete it and it's deleted.
 
@@ -74,6 +77,7 @@ Its focus is the part of working with Word documents that takes the most time: *
 - **Compare with another version.** When someone sends the document back without tracking their changes, docex writes their version into yours as tracked changes in their name, next to the changes already open.
 - **What's new since last time.** docex remembers each version you've seen and highlights what's different, even when the others didn't track their changes.
 - **Write as well as review.** Markdown shortcuts while typing, equations, find and replace, spell checking.
+- **Pictures.** Paste a screenshot or drop picture files on the page. Click a picture to replace it (at the same width, tracked), resize it by its corner, edit its alt text or save it as a file. The AI can write alt text for every picture that has none, for you to check. Pictures the editor can't show (EMF, WMF) appear as a labelled box and stay in the file. Drop a .docx on the window to open it.
 - **Distraction-free.** F11 shows only the page, full screen, either with the changes marked or as if every change were accepted (Alt+V switches): read the version everyone would end up with, and keep editing in it.
 - **An AI assistant that edits the document, not just the words.** It works on the same Markdown view as the CLI, so it can add real links, bold or highlight, turn paragraphs into headings or lists, edit tables and leave comments, on the selection or across the whole document. Everything comes back as tracked changes in your name, and one Undo takes it back. It can also go through other people's changes with you: triage starts with its suggestion for each one (accept, reject, or look closer) and a short reason.
 

@@ -1025,3 +1025,51 @@ fn compare_leaves_open_changes_alone() {
     let report = a2.compare_with(&fixture("review.docx"), &opts(true)).unwrap();
     assert!(!report.changed());
 }
+
+#[test]
+fn replacing_a_picture_keeps_its_frame() {
+    let mut d = fixture("rich.docx");
+    let old = d.images().remove(0);
+    assert_eq!((old.width_emu, old.height_emu), (Some(508_000), Some(254_000)));
+    let md = d.render(View::Review).replace("![A red box](media/rId10.png)", "![A red box](tall.png)");
+    d.apply(&md, &ApplyOpts { base_dir: Some(fixtures_path("")), ..opts(true) }).unwrap();
+    let d = reopen(&mut d);
+    let md = d.render(View::Review);
+    assert!(md.contains("{--![A red box](media/rId10.png)--}{++![A red box](media/"), "{md}");
+    let new = d.images().into_iter().find(|i| i.status == docex_core::model::Status::Ins).unwrap();
+    // Same width, the new picture's proportions (1:2), same alt text.
+    assert_eq!((new.width_emu, new.height_emu), (Some(508_000), Some(1_016_000)));
+    assert_eq!(new.alt, "A red box");
+    assert_eq!(d.media(&new.target).unwrap(), std::fs::read(fixtures_path("tall.png")).unwrap());
+}
+
+#[test]
+fn picture_alt_text_and_width_change_in_place() {
+    let mut d = fixture("rich.docx");
+    let md = d.render(View::Review).replace("![A red box](media/rId10.png)", "![A small red box](media/rId10.png){width=1cm}");
+    let r = d.apply(&md, &opts(true)).unwrap();
+    assert_eq!(r.stats.pictures, 1);
+    assert_eq!(r.stats.insertions + r.stats.deletions, 0, "{r:?}");
+    let d = reopen(&mut d);
+    let im = &d.images()[0];
+    assert_eq!((im.alt.as_str(), im.width_emu, im.height_emu), ("A small red box", Some(360_000), Some(180_000)));
+    assert!(d.review().items.is_empty() || d.review().items.iter().all(|i| i.author != "Me"));
+    // Re-applying the rendered text (which doesn't show the width) changes nothing.
+    let mut d = d;
+    let md = d.render(View::Review);
+    assert!(!d.apply(&md, &opts(true)).unwrap().changed());
+}
+
+#[test]
+fn a_moved_picture_keeps_its_size() {
+    let mut d = fixture("rich.docx");
+    let md = d.render(View::Review);
+    let img = "![A red box](media/rId10.png)";
+    let moved = md.replacen(&format!("{img}\n\n"), "", 1).replacen("# Project Proposal\n", &format!("# Project Proposal\n\n{img}\n"), 1);
+    assert_ne!(moved, md);
+    d.apply(&moved, &opts(false)).unwrap();
+    let d = reopen(&mut d);
+    let ims = d.images();
+    assert_eq!(ims.len(), 1);
+    assert_eq!((ims[0].width_emu, ims[0].height_emu), (Some(508_000), Some(254_000)));
+}

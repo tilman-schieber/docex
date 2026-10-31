@@ -172,6 +172,17 @@ enum Cmd {
         #[command(flatten)]
         out: OutArgs,
     },
+    /// List the pictures: file, size on the page and in pixels, alt text and
+    /// section. To replace one, put another file's path in its `![alt](…)` in
+    /// the Markdown: it takes over the old picture's place, width and alt text.
+    Images {
+        file: PathBuf,
+        /// Also save them to this directory, numbered in reading order.
+        #[arg(long)]
+        extract: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Show a content diff between two documents, or write B onto A as tracked changes.
     Diff {
         a: PathBuf,
@@ -271,10 +282,14 @@ fn print_report(r: &Report, tracked: bool) {
     if s.kind_changes > 0 {
         parts.push(format!("{} paragraph styles changed", s.kind_changes));
     }
+    if s.pictures > 0 {
+        parts.push(format!("{} pictures changed (alt text or size, not tracked)", s.pictures));
+    }
     if r.comments_added > 0 {
         parts.push(format!("{} comments added", r.comments_added));
     }
-    eprintln!("{}{}", parts.join(", "), if tracked { " (tracked)" } else { "" });
+    let only_pictures = s.pictures > 0 && parts.len() == 1;
+    eprintln!("{}{}", parts.join(", "), if tracked && !only_pictures { " (tracked)" } else { "" });
 }
 
 /// Directory relative image paths in a Markdown file are resolved against.
@@ -493,6 +508,40 @@ fn main() -> Result<()> {
                         doc.set_track_changes(on)?;
                         save(&mut doc, &file, &out)?;
                         eprintln!("track changes {s}");
+                    }
+                }
+            }
+        }
+        Cmd::Images { file, extract, json } => {
+            let doc = Docx::open(&file)?;
+            let images = doc.images();
+            if let Some(dir) = &extract {
+                std::fs::create_dir_all(dir)?;
+                for im in &images {
+                    let name = im.target.rsplit('/').next().unwrap_or(&im.target);
+                    let dest = dir.join(format!("{:02}-{name}", im.n));
+                    std::fs::write(&dest, doc.media(&im.target)?).with_context(|| format!("writing {}", dest.display()))?;
+                }
+                eprintln!("{} pictures saved to {}", images.len(), dir.display());
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&images)?);
+            } else if extract.is_none() {
+                if images.is_empty() {
+                    eprintln!("no pictures");
+                }
+                for im in &images {
+                    let cm = |e: u64| e as f64 / 360_000.0;
+                    let size = im.width_emu.zip(im.height_emu).map(|(w, h)| format!("{:.1} × {:.1} cm", cm(w), cm(h))).unwrap_or_default();
+                    let px = im.pixels.map(|(w, h)| format!("{w}×{h} px")).unwrap_or_default();
+                    let st = match im.status {
+                        docex_core::model::Status::Ins => " (inserted)",
+                        docex_core::model::Status::Del => " (deleted)",
+                        _ => "",
+                    };
+                    println!("{:>3}  {}{st}  {size}  {px}  {} KB  {}", im.n, im.target, im.bytes.div_ceil(1024), im.section.join(" › "));
+                    if !im.alt.is_empty() {
+                        println!("     \"{}\"", im.alt);
                     }
                 }
             }

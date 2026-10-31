@@ -92,6 +92,21 @@ fn theme() -> Theme {
 }
 
 #[tauri::command]
+fn save_image(state: State<AppState>, src: String, dest: String) -> Result<(), String> {
+    backend::save_image(&state, src, dest)
+}
+
+#[tauri::command]
+fn save_images(state: State<AppState>, dir: String) -> Result<usize, String> {
+    backend::save_images(&state, dir)
+}
+
+#[tauri::command]
+fn keep_pasted(data: String, ext: String) -> Result<String, String> {
+    backend::keep_pasted(data, ext)
+}
+
+#[tauri::command]
 fn image_data(path: String) -> Result<String, String> {
     backend::image_data(path)
 }
@@ -301,6 +316,9 @@ fn main() {
             set_track,
             save,
             image_data,
+            save_image,
+            save_images,
+            keep_pasted,
             theme,
             md_to_model,
             ai_source,

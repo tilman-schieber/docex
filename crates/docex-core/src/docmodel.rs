@@ -31,6 +31,11 @@ pub struct Span {
     pub obj: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alt: Option<String>,
+    /// A picture's size on the page, in EMU. A changed width resizes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub w: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub h: Option<u64>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub b: bool,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -258,6 +263,10 @@ fn para_to_model(p: Option<&Para>, e: &EPara, known_comments: &HashSet<String>) 
             if let (true, Some(p), Some(ii)) = (a.key.starts_with("img:"), p, item) {
                 if let What::Obj { node, .. } = &p.items[ii].what {
                     s.alt = Some(crate::model::image_alt(node)).filter(|a| !a.is_empty());
+                    if let Some((w, h)) = crate::model::image_extent(node) {
+                        s.w = Some(w);
+                        s.h = Some(h);
+                    }
                 }
             }
             spans.push(s);
@@ -429,7 +438,11 @@ fn para_from_model(m: &MPara) -> EPara {
             highlight: s.hl.as_deref().map(crate::model::highlight_index).unwrap_or(0),
             color: s.color.as_deref().and_then(|c| u32::from_str_radix(c.trim_start_matches('#'), 16).ok()),
         };
-        let mk = |key: String| EAtom { key, marks, link: s.link.clone().filter(|l| !l.is_empty()), st: s.st };
+        let mk = |key: String| {
+            // A picture's alt text and width always come along: they are what the editor shows.
+            let img = key.starts_with("img:");
+            EAtom { alt: img.then(|| s.alt.clone().unwrap_or_default()), width: s.w.filter(|_| img), key, marks, link: s.link.clone().filter(|l| !l.is_empty()), st: s.st }
+        };
         match &s.obj {
             Some(o) => atoms.push(mk(o.clone())),
             None => {

@@ -822,8 +822,121 @@ main {
   vertical-align: bottom;
 }
 
-.ProseMirror img.ProseMirror-selectednode {
+/* Pictures: shown at their size on the page; a corner grip resizes the selected one. */
+.ProseMirror .imgv {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: bottom;
+  line-height: 0;
+  cursor: pointer;
+}
+
+.ProseMirror .imgv.ProseMirror-selectednode {
+  outline: none;
+}
+
+.ProseMirror .imgv.ProseMirror-selectednode img,
+.ProseMirror .imgv.resizing img {
   outline: 2px solid var(--accent);
+}
+
+.imgv-grip {
+  display: none;
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  width: 10px;
+  height: 10px;
+  background: var(--accent);
+  border: 2px solid var(--page);
+  cursor: nwse-resize;
+}
+
+.imgv.ProseMirror-selectednode .imgv-grip,
+.imgv.resizing .imgv-grip {
+  display: block;
+}
+
+/* A picture someone inserted or deleted, as tracked. */
+.ProseMirror ins .imgv img {
+  outline: 2px solid color-mix(in srgb, var(--green) 70%, transparent);
+  outline-offset: 2px;
+}
+
+.ProseMirror ins.mine .imgv img {
+  outline-color: color-mix(in srgb, var(--cyan) 70%, transparent);
+}
+
+.ProseMirror del .imgv img {
+  opacity: 0.4;
+  outline: 2px dashed color-mix(in srgb, var(--red) 70%, transparent);
+  outline-offset: 2px;
+}
+
+body.zen-clean .ProseMirror ins .imgv img {
+  outline: none;
+}
+
+/* Files dragged over the window. */
+#page-wrap.dropping .page {
+  outline: 2px dashed var(--accent);
+  outline-offset: -8px;
+}
+
+#popover .pop-alt {
+  margin: 2px 0 8px;
+  max-width: 360px;
+  color: var(--text);
+  white-space: normal;
+}
+
+#popover .pop-alt.none {
+  color: var(--faint);
+  font-style: italic;
+}
+
+#popover .row {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+#popover .pop-who {
+  align-self: center;
+  margin-right: 6px;
+  color: var(--dim);
+}
+
+
+/* Alt text written by the AI, to check. */
+.alt-dialog .alt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 60vh;
+  overflow: auto;
+  margin: 8px 0;
+}
+
+.alt-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 10px;
+  align-items: start;
+}
+
+.alt-thumb {
+  max-width: 120px;
+  max-height: 90px;
+  object-fit: contain;
+  background: var(--page);
+  border: 1px solid var(--hair);
+}
+
+.alt-edit textarea {
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .ProseMirror .math {

@@ -6,7 +6,17 @@ All notable changes to docex. The format follows [Keep a Changelog](https://keep
 
 ### Added
 
+- **Pictures in the app.** Paste a screenshot, or drop picture files where they should go. Click a picture for its menu: replace it (the new one takes the old one's width and alt text, as a tracked replacement), edit its alt text, save it as a file, delete it; drag its corner to resize. Pictures show at their size on the page. WebP, BMP and SVG files are converted to PNG on the way in; pictures the editor can't show (EMF, WMF) appear as a labelled box instead of a broken image.
+- **Alt text by the AI.** "Write alt text for pictures without one" in the command palette sends each picture with the text around it to the AI, then lists the suggestions to check and edit before they go in. "Describe with AI" in a picture's menu does it for one.
+- **Open a document by dropping it** on the window.
+- **`docex images FILE`** lists the pictures with their size, alt text and section (`--json`); `--extract DIR` saves them, numbered in reading order. "Save all pictures to a folder…" does the same in the app.
+- In the Markdown, a picture's alt text can now be edited, and `{width=8cm}` (or `50%`) after it resizes it. Putting another file's path in a picture's place replaces it at the same width, keeping its wrapping and alt text.
 - **Distraction-free mode** (F11, or "Distraction-free mode" in the command palette): only the page, full screen. Show it with the changes marked, or as if every change were accepted, to read and edit the version everyone would end up with. Alt+V switches between the two, Esc or F11 leaves.
+
+### Fixed
+
+- Editing a picture's alt text in the Markdown was silently ignored.
+- A picture moved to another place came back at a default size.
 
 ## [0.2.0] - 2026-10-30
 

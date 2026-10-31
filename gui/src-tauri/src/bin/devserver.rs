@@ -53,6 +53,9 @@ fn dispatch(st: &AppState, cmd: &str, a: &Value) -> Result<Value, String> {
         "save" => to(backend::save(st, arg(a, "model")?, arg(a, "tracked")?, arg(a, "path")?)?),
         "theme" => to(backend::theme()),
         "image_data" => to(backend::image_data(arg(a, "path")?)?),
+        "save_image" => to(backend::save_image(st, arg(a, "src")?, arg(a, "dest")?)?),
+        "save_images" => to(backend::save_images(st, arg(a, "dir")?)?),
+        "keep_pasted" => to(backend::keep_pasted(arg(a, "data")?, arg(a, "ext")?)?),
         "snapshot_swap" => to(backend::snapshot_swap(arg(a, "path")?, arg(a, "paras")?)),
         "snapshot_put" => to(backend::snapshot_put(arg(a, "path")?, arg(a, "paras")?)?),
         "md_to_model" => to(backend::md_to_model(arg(a, "md")?)),
@@ -69,8 +72,12 @@ fn dispatch(st: &AppState, cmd: &str, a: &Value) -> Result<Value, String> {
         "saved_by" => to(backend::saved_by(arg(a, "path")?)),
         "compare" => to(backend::compare(st, arg(a, "model")?, arg(a, "tracked")?, arg(a, "path")?, arg(a, "author")?)?),
         // Tests script the AI's answer: the file named by DOCEX_FAKE_AI.
+        // The request goes next to it (`.req`), for tests to check what was sent.
         "ai_complete" => match std::env::var("DOCEX_FAKE_AI") {
-            Ok(p) => std::fs::read_to_string(p).map(Value::String).map_err(|e| e.to_string()),
+            Ok(p) => {
+                let _ = std::fs::write(format!("{p}.req"), a.get("req").map(Value::to_string).unwrap_or_default());
+                std::fs::read_to_string(p).map(Value::String).map_err(|e| e.to_string())
+            }
             Err(_) => Err("no AI in the dev server".into()),
         },
         // A newer version: whatever a test writes to the file named by DOCEX_FAKE_UPDATE.

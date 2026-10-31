@@ -35,9 +35,28 @@ pub mod styles;
 pub mod template;
 pub mod xml;
 
+/// A picture in the document, as `docex images` lists it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ImageInfo {
+    /// Its number in reading order, from 1.
+    pub n: usize,
+    /// Media file in the package (relative to `word/`), as in `![alt](target)`.
+    pub target: String,
+    pub alt: String,
+    /// Size on the page in EMU (360,000 per cm), when known.
+    pub width_emu: Option<u64>,
+    pub height_emu: Option<u64>,
+    /// Pixel size of the file (PNG, JPEG, GIF).
+    pub pixels: Option<(u64, u64)>,
+    pub bytes: usize,
+    pub section: Vec<String>,
+    /// Plain, or a tracked insertion or deletion.
+    pub status: Status,
+}
+
 use anyhow::{bail, Context, Result};
 use comments::{Comment, Comments};
-use model::{Block, Ctx, Note, TextBox};
+use model::{Block, Ctx, Note, Status, TextBox};
 use package::{Package, Rels};
 use patch::{align, block_sim, Align, Carry, Opts, PatchCtx, Splice, Stats};
 use render::{RenderCtx, View};
@@ -132,7 +151,7 @@ pub struct Report {
 impl Report {
     pub fn changed(&self) -> bool {
         let s = &self.stats;
-        s.insertions + s.deletions + s.formats + s.paragraphs_added + s.paragraphs_removed + s.kind_changes + self.comments_added > 0
+        s.insertions + s.deletions + s.formats + s.paragraphs_added + s.paragraphs_removed + s.kind_changes + s.pictures + self.comments_added > 0
     }
 }
 
@@ -1171,6 +1190,49 @@ impl Docx {
         self.dirty.dom = true;
         self.dirty.comments = true;
         Ok(())
+    }
+
+    /// The pictures in the body, in reading order (each place a picture is used).
+    pub fn images(&self) -> Vec<ImageInfo> {
+        use docmodel::{MBlock, MPara};
+        let model = self.model();
+        let mut out = Vec::new();
+        let mut path: Vec<(u8, String)> = Vec::new();
+        let add = |p: &MPara, path: &mut Vec<(u8, String)>, out: &mut Vec<ImageInfo>| {
+            if let Some(l) = p.kind.strip_prefix('h').and_then(|n| n.parse::<u8>().ok()) {
+                path.retain(|(lv, _)| *lv < l);
+                path.push((l, p.spans.iter().filter(|s| s.st != Status::Del).map(|s| s.t.as_str()).collect::<String>().trim().to_string()));
+            }
+            for s in &p.spans {
+                let Some(target) = s.obj.as_deref().and_then(|o| o.strip_prefix("img:")) else { continue };
+                let data = self.pkg.read(&self.rels.resolve(target)).ok();
+                out.push(ImageInfo {
+                    n: out.len() + 1,
+                    target: target.to_string(),
+                    alt: s.alt.clone().unwrap_or_default(),
+                    width_emu: s.w,
+                    height_emu: s.h,
+                    pixels: data.as_deref().and_then(patch::image_size),
+                    bytes: data.map_or(0, |d| d.len()),
+                    section: path.iter().map(|(_, t)| t.clone()).collect(),
+                    status: s.st,
+                });
+            }
+        };
+        for b in &model.blocks {
+            match b {
+                MBlock::Para(p) => add(p, &mut path, &mut out),
+                MBlock::Table { rows, .. } => rows.iter().flatten().flatten().for_each(|p| add(p, &mut path, &mut out)),
+                MBlock::Control { paras, .. } => paras.iter().for_each(|p| add(p, &mut path, &mut out)),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// The bytes of a media file, by its target (`media/image1.png`).
+    pub fn media(&self, target: &str) -> Result<Vec<u8>> {
+        self.pkg.read(&self.rels.resolve(target))
     }
 
     /// Copy embedded images to `dir`, keeping their paths (e.g. `media/image1.png`).

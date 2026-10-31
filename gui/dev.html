@@ -27,15 +27,27 @@
       // blocks a test.
       const file = new URLSearchParams(location.search).get("file");
       let next = 0;
-      window.__DOCEX_DEV__ = { saveAs: null, openPath: null, calls: [] };
+      // Event listeners by event name, so a test can fire Tauri events (`emit`).
+      const callbacks = {};
+      const listeners = [];
+      window.__DOCEX_DEV__ = {
+        saveAs: null,
+        openPath: null,
+        calls: [],
+        emit: (event, payload) => listeners.filter((l) => l.event === event).forEach((l) => callbacks[l.handler]?.({ event, id: 0, payload })),
+      };
       window.__TAURI_INTERNALS__ = {
         metadata: { currentWindow: { label: "main" }, currentWebview: { windowLabel: "main", label: "main" } },
-        transformCallback: () => ++next,
+        transformCallback: (cb) => {
+          callbacks[++next] = cb;
+          return next;
+        },
         unregisterCallback() {},
         convertFileSrc: (p) => p,
         async invoke(cmd, args = {}) {
           window.__DOCEX_DEV__.calls.push(cmd);
           if (cmd === "initial_path") return file;
+          if (cmd === "plugin:event|listen") listeners.push({ event: args.event, handler: args.handler });
           if (cmd.startsWith("plugin:event|")) return ++next;
           if (cmd.startsWith("plugin:window|")) return null;
           // ask() / confirm() are messages with buttons: answer with the confirming one.

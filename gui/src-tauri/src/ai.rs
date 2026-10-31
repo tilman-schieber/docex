@@ -138,6 +138,29 @@ pub struct Request {
     pub prompt: String,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// Pictures to look at, as data URLs (PNG, JPEG or GIF).
+    #[serde(default)]
+    pub images: Vec<String>,
+}
+
+/// The user message: the prompt alone, or the pictures and then the prompt.
+fn user_content(req: &Request, openai: bool) -> serde_json::Value {
+    if req.images.is_empty() {
+        return serde_json::Value::String(req.prompt.clone());
+    }
+    let mut parts: Vec<serde_json::Value> = req
+        .images
+        .iter()
+        .filter_map(|url| {
+            if openai {
+                return Some(serde_json::json!({"type": "image_url", "image_url": {"url": url}}));
+            }
+            let (head, data) = url.strip_prefix("data:")?.split_once(";base64,")?;
+            Some(serde_json::json!({"type": "image", "source": {"type": "base64", "media_type": head, "data": data}}))
+        })
+        .collect();
+    parts.push(serde_json::json!({"type": "text", "text": req.prompt}));
+    serde_json::Value::Array(parts)
 }
 
 #[derive(Serialize, Clone)]
@@ -161,7 +184,7 @@ pub async fn complete(app: tauri::AppHandle, req: Request) -> Result<String, Str
             "max_tokens": max_tokens,
             "messages": [
                 {"role": "system", "content": req.system},
-                {"role": "user", "content": req.prompt},
+                {"role": "user", "content": user_content(&req, true)},
             ],
         }));
         if !s.openai_key.is_empty() {
@@ -186,7 +209,7 @@ pub async fn complete(app: tauri::AppHandle, req: Request) -> Result<String, Str
                 "system": req.system,
                 "output_config": {"effort": effort},
                 "fallbacks": "default",
-                "messages": [{"role": "user", "content": req.prompt}],
+                "messages": [{"role": "user", "content": user_content(&req, false)}],
             }))
             .send()
             .await

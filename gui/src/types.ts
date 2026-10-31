@@ -4,6 +4,9 @@ export interface Span {
   t?: string;
   obj?: string;
   alt?: string;
+  /** A picture's size on the page, in EMU (914,400 per inch). */
+  w?: number;
+  h?: number;
   b?: boolean;
   i?: boolean;
   s?: boolean;
