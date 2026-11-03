@@ -327,14 +327,30 @@ main {
   scroll-behavior: smooth;
 }
 
+/* A narrow window: the page fills it, its margins shrink with it. */
+@media (max-width: 640px) {
+  #page-wrap {
+    padding: 12px 6px 80px;
+  }
+}
+
 .page {
   max-width: 820px;
   min-width: 0;
   margin: 0 auto;
   background: var(--page);
   border: 1px solid var(--hair);
-  padding: 64px 76px;
+  /* Margins as a share of the page's width once it is narrower than 820px
+     (a percentage padding is one of #page-wrap's width, which then is the page's). */
+  padding: min(64px, 7.8%) min(76px, 9.3%);
   min-height: 100%;
+  /* The text fills the page, so a click anywhere on an empty page puts the caret there. */
+  display: flex;
+  flex-direction: column;
+}
+
+.page > .ProseMirror {
+  flex: 1 0 auto;
 }
 
 #sidebar {

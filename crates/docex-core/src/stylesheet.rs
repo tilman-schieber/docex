@@ -543,7 +543,11 @@ impl Stylesheet {
             let _ = writeln!(s, "{pg} {{ max-width: {}px; }}", num(w / 0.75));
         }
         if let Some([t, r, b, l]) = self.page.margin {
-            let px = |x: f32| format!("{}px", num(x / 0.75));
+            // The margins shrink with the page in a narrow window, as a share
+            // of its width (a percentage padding is one of the page-wrap's
+            // width, which is the page's once the page no longer fits).
+            let w = self.page.size.map_or(615.0, |(w, _)| w);
+            let px = |x: f32| format!("min({}px, {}%)", num(x / 0.75), num(x / w * 100.0));
             let _ = writeln!(s, "{pg} {{ padding: {} {} {} {}; }}", px(t), px(r), px(b), px(l));
         }
         for t in self.rules.keys() {

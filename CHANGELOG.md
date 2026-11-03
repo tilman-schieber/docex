@@ -19,6 +19,8 @@ All notable changes to docex. The format follows [Keep a Changelog](https://keep
 
 - Editing a picture's alt text in the Markdown was silently ignored.
 - A picture moved to another place came back at a default size.
+- In a new, empty document, a click anywhere on the page below the first line now puts the caret there (before, nothing happened and typing went nowhere).
+- In a narrow window, the page margins shrink with the page instead of squeezing the text into a thin column.
 
 ## [0.2.0] - 2026-10-30
 
